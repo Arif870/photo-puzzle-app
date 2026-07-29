@@ -18,6 +18,8 @@ import {
   Eye,
   ChevronDown,
   ChevronUp,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 
 const PRESET_IMAGES = [
@@ -76,7 +78,10 @@ export default function App() {
   const [startTime, setStartTime] = useState(null);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [isCompleted, setIsCompleted] = useState(false);
-  const [showMobilePreview, setShowMobilePreview] = useState(true); // Toggle reference preview
+  const [showMobilePreview, setShowMobilePreview] = useState(true);
+
+  // Presenter Fullscreen Modal State
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -102,6 +107,7 @@ export default function App() {
       setGridSize(data.gridSize);
       setSelectedImage(data.selectedImage);
       setStartTime(Date.now());
+      setIsModalOpen(false); // Close modal when game starts
     });
 
     channel.bind("PLAYER_FINISHED", data => {
@@ -318,6 +324,48 @@ export default function App() {
 
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 p-6 flex flex-col font-sans">
+        {/* Fullscreen Modal Toggle Overlay */}
+        {isModalOpen && (
+          <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center p-6">
+            <button
+              onClick={() => setIsModalOpen(false)}
+              className="absolute top-6 right-6 p-3 bg-slate-800 hover:bg-slate-700 text-white rounded-2xl flex items-center gap-2 font-bold transition shadow-xl"
+            >
+              <Minimize2 className="w-6 h-6" /> Exit Fullscreen Mode
+            </button>
+
+            {gameStatus === "lobby" ? (
+              <div className="flex flex-col items-center justify-center text-center">
+                <h2 className="text-3xl font-black text-white mb-2">
+                  Scan QR Code to Join Session
+                </h2>
+                <p className="text-slate-400 text-base mb-8">
+                  Room Code:{" "}
+                  <span className="font-mono text-indigo-400 font-bold">
+                    {roomId}
+                  </span>
+                </p>
+                <div className="bg-white p-8 rounded-3xl shadow-2xl border-8 border-slate-800">
+                  <QRCodeSVG value={joinUrl} size={380} />
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center max-w-3xl w-full">
+                <span className="text-sm font-mono text-amber-400 uppercase tracking-widest mb-3 bg-amber-950/60 border border-amber-800/50 px-4 py-1.5 rounded-full">
+                  Fullscreen Puzzle Target Reference
+                </span>
+                <div className="w-full aspect-square max-h-[80vh] rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl">
+                  <img
+                    src={selectedImage}
+                    alt="Target Fullscreen"
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         <header className="flex justify-between items-center bg-slate-900/80 backdrop-blur border border-slate-800 px-6 py-4 rounded-2xl mb-6 shadow-xl">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-indigo-400">
@@ -416,6 +464,15 @@ export default function App() {
           </div>
 
           <div className="lg:col-span-6 bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center relative overflow-hidden shadow-xl">
+            {/* Fullscreen Expand Action Button */}
+            <button
+              onClick={() => setIsModalOpen(true)}
+              className="absolute top-4 right-4 p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl flex items-center gap-1.5 text-xs font-bold border border-slate-700 transition shadow-md z-10"
+              title="Toggle Fullscreen Projection Mode"
+            >
+              <Maximize2 className="w-4 h-4 text-indigo-400" /> Fullscreen Mode
+            </button>
+
             {gameStatus === "lobby" ? (
               <div className="w-full h-full flex flex-col items-center justify-between py-4">
                 <div className="text-center">
@@ -427,7 +484,7 @@ export default function App() {
                   </h2>
                 </div>
 
-                <div className="bg-white p-6 rounded-3xl shadow-2xl my-4 border-4 border-slate-800">
+                <div className="bg-white p-6 rounded-3xl shadow-2xl my-4 border-4 border-slate-800 relative group">
                   <QRCodeSVG value={joinUrl} size={220} />
                 </div>
 
@@ -461,7 +518,7 @@ export default function App() {
                     alt="Puzzle Target"
                     className="w-full h-full object-cover"
                   />
-                  <div className="absolute top-3 right-3 bg-slate-950/90 backdrop-blur text-indigo-400 border border-slate-800 px-3 py-1 rounded-xl text-xs font-mono font-bold">
+                  <div className="absolute top-3 left-3 bg-slate-950/90 backdrop-blur text-indigo-400 border border-slate-800 px-3 py-1 rounded-xl text-xs font-mono font-bold">
                     {gridSize}x{gridSize}
                   </div>
                 </div>
@@ -540,7 +597,7 @@ export default function App() {
   }
 
   // =========================================================================
-  // MOBILE PARTICIPANT INTERFACE WITH MINI IMAGE REFERENCE
+  // MOBILE PARTICIPANT INTERFACE WITH BOTTOM REFERENCE IMAGE CARD
   // =========================================================================
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 max-w-md mx-auto font-sans">
@@ -556,7 +613,6 @@ export default function App() {
         )}
       </header>
 
-      {/* Screen 1: Name Entry */}
       {gameStatus === "lobby" && !currentPlayerId && (
         <div className="my-auto bg-slate-900 border border-slate-800 rounded-3xl p-6 text-center shadow-2xl">
           <h2 className="text-2xl font-black mb-1">Join Session Lobby</h2>
@@ -583,7 +639,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Screen 2: Waiting in Lobby */}
       {gameStatus === "lobby" && currentPlayerId && (
         <div className="my-auto text-center py-12 px-6 bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl">
           <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
@@ -594,50 +649,8 @@ export default function App() {
         </div>
       )}
 
-      {/* Screen 3: Interactive Dynamic Grid Slicer with Mini Image Preview */}
       {gameStatus === "playing" && (
-        <div className="my-auto flex flex-col items-center w-full space-y-3">
-          {/* 👈 MINI TARGET IMAGE REFERENCE CARD FOR MOBILE */}
-          {!isCompleted && (
-            <div className="w-full max-w-[350px] bg-slate-900 border border-slate-800 rounded-2xl p-2.5 shadow-md flex flex-col transition-all">
-              <button
-                onClick={() => setShowMobilePreview(!showMobilePreview)}
-                className="flex items-center justify-between w-full text-xs font-bold text-slate-300 px-1"
-              >
-                <span className="flex items-center gap-1.5 text-indigo-400">
-                  <Eye className="w-3.5 h-3.5" /> Target Photo Reference
-                </span>
-                {showMobilePreview ? (
-                  <ChevronUp className="w-4 h-4 text-slate-400" />
-                ) : (
-                  <ChevronDown className="w-4 h-4 text-slate-400" />
-                )}
-              </button>
-
-              {showMobilePreview && (
-                <div className="mt-2 flex items-center gap-3 bg-slate-950 p-2 rounded-xl border border-slate-800">
-                  <img
-                    src={selectedImage}
-                    alt="Target Mini"
-                    className="w-16 h-16 object-cover rounded-lg border border-slate-700 shadow-inner"
-                  />
-                  <div className="text-[11px] text-slate-400">
-                    <p className="text-slate-200 font-semibold mb-0.5">
-                      Match this image
-                    </p>
-                    <p>
-                      Grid:{" "}
-                      <span className="font-mono text-indigo-400 font-bold">
-                        {gridSize}x{gridSize}
-                      </span>{" "}
-                      ({gridSize * gridSize} tiles)
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
+        <div className="my-auto flex flex-col items-center w-full space-y-4">
           {isCompleted ? (
             <div className="w-full bg-slate-900 border border-emerald-500/30 rounded-3xl p-6 text-center shadow-2xl">
               <CheckCircle2 className="w-16 h-16 text-emerald-400 mx-auto mb-3" />
@@ -652,10 +665,12 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <div className="w-full">
-              <p className="text-[11px] font-semibold text-center text-slate-400 mb-2">
+            <div className="w-full space-y-4">
+              <p className="text-[11px] font-semibold text-center text-slate-400">
                 Tap two tiles to swap positions
               </p>
+
+              {/* Main Game Grid */}
               <div
                 className="grid gap-1 bg-slate-900 p-2 rounded-2xl border border-slate-800 shadow-2xl w-full aspect-square max-w-[350px] mx-auto"
                 style={{
@@ -681,6 +696,45 @@ export default function App() {
                     />
                   );
                 })}
+              </div>
+
+              {/* 👈 TARGET MINI IMAGE REFERENCE AT BOTTOM */}
+              <div className="w-full max-w-[350px] mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-2.5 shadow-md flex flex-col transition-all">
+                <button
+                  onClick={() => setShowMobilePreview(!showMobilePreview)}
+                  className="flex items-center justify-between w-full text-xs font-bold text-slate-300 px-1"
+                >
+                  <span className="flex items-center gap-1.5 text-indigo-400">
+                    <Eye className="w-3.5 h-3.5" /> Target Photo Reference
+                  </span>
+                  {showMobilePreview ? (
+                    <ChevronDown className="w-4 h-4 text-slate-400" />
+                  ) : (
+                    <ChevronUp className="w-4 h-4 text-slate-400" />
+                  )}
+                </button>
+
+                {showMobilePreview && (
+                  <div className="mt-2 flex items-center gap-3 bg-slate-950 p-2 rounded-xl border border-slate-800">
+                    <img
+                      src={selectedImage}
+                      alt="Target Mini Bottom"
+                      className="w-16 h-16 object-cover rounded-lg border border-slate-700 shadow-inner"
+                    />
+                    <div className="text-[11px] text-slate-400">
+                      <p className="text-slate-200 font-semibold mb-0.5">
+                        Reference Image
+                      </p>
+                      <p>
+                        Grid:{" "}
+                        <span className="font-mono text-indigo-400 font-bold">
+                          {gridSize}x{gridSize}
+                        </span>{" "}
+                        ({gridSize * gridSize} tiles)
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
