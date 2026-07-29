@@ -35,17 +35,17 @@ const PRESET_IMAGES = [
   },
 ];
 
+// Updated Difficulty Grids
 const DIFFICULTY_LEVELS = [
   { id: "2", label: "Bigger (2x2)", grid: 2 },
-  { id: "4", label: "Medium (4x4)", grid: 4 },
-  { id: "6", label: "Hard (6x6)", grid: 6 },
-  { id: "8", label: "Complex (8x8)", grid: 8 },
+  { id: "3", label: "Medium (3x3)", grid: 3 },
+  { id: "4", label: "Hard (4x4)", grid: 4 },
+  { id: "6", label: "Complex (6x6)", grid: 6 },
 ];
 
 const PUSHER_KEY = "e73ccec76d7cca0328b8";
 const PUSHER_CLUSTER = "ap2";
 
-// Helper function to send events via our Vercel API
 async function sendRoomEvent(room, event, data) {
   try {
     await fetch("/api/pusher", {
@@ -63,7 +63,7 @@ export default function App() {
   const [roomId, setRoomId] = useState("");
 
   const [selectedImage, setSelectedImage] = useState(PRESET_IMAGES[0].url);
-  const [gridSize, setGridSize] = useState(4);
+  const [gridSize, setGridSize] = useState(2); // Default to 2x2
   const [gameStatus, setGameStatus] = useState("lobby");
   const [players, setPlayers] = useState([]);
   const [playerName, setPlayerName] = useState("");
@@ -84,7 +84,6 @@ export default function App() {
     }
   }, []);
 
-  // Listen to room channel
   useEffect(() => {
     if (!roomId) return;
 
@@ -203,23 +202,53 @@ export default function App() {
       const checkWin = newTiles.every((tile, idx) => tile.correctIndex === idx);
       if (checkWin) {
         setIsCompleted(true);
-        const finalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+        const finalTime = parseFloat(
+          ((Date.now() - startTime) / 1000).toFixed(1),
+        );
         confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
 
         await sendRoomEvent(roomId, "PLAYER_FINISHED", {
           id: currentPlayerId,
-          time: parseFloat(finalTime),
+          time: finalTime,
         });
       }
     }
   };
 
+  // Fixed local file reader & compressor for local uploads
   const handleCustomImageUpload = e => {
     const file = e.target.files[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = uploadEvent =>
-        setSelectedImage(uploadEvent.target.result);
+      reader.onload = uploadEvent => {
+        const img = new Image();
+        img.src = uploadEvent.target.result;
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          const maxDim = 800; // Resize to max 800px for fast websocket transfer
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > maxDim) {
+              height *= maxDim / width;
+              width = maxDim;
+            }
+          } else {
+            if (height > maxDim) {
+              width *= maxDim / height;
+              height = maxDim;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, width, height);
+          const resizedDataUrl = canvas.toDataURL("image/jpeg", 0.85);
+          setSelectedImage(resizedDataUrl);
+        };
+      };
       reader.readAsDataURL(file);
     }
   };
@@ -283,9 +312,15 @@ export default function App() {
   }
 
   if (role === "host") {
-    const sortedLeaderboard = [...players]
-      .filter(p => p.completed)
-      .sort((a, b) => a.time - b.time);
+    // Correct Leaderboard Sorting: Completed first (sorted by time ASC), then Uncompleted
+    const sortedPlayers = [...players].sort((a, b) => {
+      if (a.completed && b.completed) return a.time - b.time;
+      if (a.completed) return -1;
+      if (b.completed) return 1;
+      return 0;
+    });
+
+    const completedPlayers = sortedPlayers.filter(p => p.completed);
 
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 p-6 flex flex-col">
@@ -326,7 +361,7 @@ export default function App() {
                 ))}
               </div>
 
-              <label className="flex items-center justify-center gap-2 w-full py-3 bg-slate-800 hover:bg-slate-750 border border-dashed border-slate-600 rounded-xl cursor-pointer text-xs font-semibold text-slate-300 transition mb-6">
+              <label className="flex items-center justify-center gap-2 w-full py-3 bg-slate-800 hover:bg-slate-700 border border-dashed border-slate-600 rounded-xl cursor-pointer text-xs font-semibold text-slate-300 transition mb-6">
                 <Upload className="w-4 h-4" /> Upload Custom Photo
                 <input
                   type="file"
@@ -417,14 +452,15 @@ export default function App() {
             </h2>
 
             <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-              {players.length === 0 ? (
+              {sortedPlayers.length === 0 ? (
                 <div className="h-48 flex flex-col items-center justify-center text-slate-500 text-sm">
                   Waiting for participants to scan QR...
                 </div>
               ) : (
-                players.map(p => {
-                  const rank =
-                    sortedLeaderboard.findIndex(item => item.id === p.id) + 1;
+                sortedPlayers.map(p => {
+                  const rank = p.completed
+                    ? completedPlayers.findIndex(item => item.id === p.id) + 1
+                    : null;
                   return (
                     <div
                       key={p.id}
@@ -432,7 +468,9 @@ export default function App() {
                     >
                       <div className="flex items-center gap-3">
                         {p.completed ? (
-                          <div className="w-7 h-7 rounded-full bg-amber-500 text-slate-950 font-black text-xs flex items-center justify-center">
+                          <div
+                            className={`w-7 h-7 rounded-full font-black text-xs flex items-center justify-center ${rank === 1 ? "bg-amber-400 text-slate-950" : rank === 2 ? "bg-slate-300 text-slate-950" : rank === 3 ? "bg-amber-700 text-white" : "bg-slate-800 text-slate-300"}`}
+                          >
                             #{rank}
                           </div>
                         ) : (
@@ -450,7 +488,9 @@ export default function App() {
                           </span>
                         ) : (
                           <span className="text-xs text-emerald-400 bg-emerald-950/60 border border-emerald-800/50 px-2.5 py-1 rounded-full">
-                            In Lobby
+                            {gameStatus === "playing"
+                              ? "Solving..."
+                              : "In Lobby"}
                           </span>
                         )}
                       </div>
