@@ -17,7 +17,6 @@ import {
   ChevronRight,
 } from "lucide-react";
 
-// Default puzzle presets
 const PRESET_IMAGES = [
   {
     id: "1",
@@ -37,15 +36,27 @@ const PRESET_IMAGES = [
 ];
 
 const DIFFICULTY_LEVELS = [
-  { id: "2", label: "Bigger (2x2)", grid: 2, count: 4 },
-  { id: "4", label: "Medium (4x4)", grid: 4, count: 16 },
-  { id: "6", label: "Hard (6x6)", grid: 6, count: 36 },
-  { id: "8", label: "Complex (8x8)", grid: 8, count: 64 },
+  { id: "2", label: "Bigger (2x2)", grid: 2 },
+  { id: "4", label: "Medium (4x4)", grid: 4 },
+  { id: "6", label: "Hard (6x6)", grid: 6 },
+  { id: "8", label: "Complex (8x8)", grid: 8 },
 ];
 
-// Pusher Setup with your credentials
 const PUSHER_KEY = "e73ccec76d7cca0328b8";
 const PUSHER_CLUSTER = "ap2";
+
+// Helper function to send events via our Vercel API
+async function sendRoomEvent(room, event, data) {
+  try {
+    await fetch("/api/pusher", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ room, event, data }),
+    });
+  } catch (err) {
+    console.error("Failed to trigger room event:", err);
+  }
+}
 
 export default function App() {
   const [role, setRole] = useState("landing");
@@ -58,16 +69,12 @@ export default function App() {
   const [playerName, setPlayerName] = useState("");
   const [currentPlayerId, setCurrentPlayerId] = useState("");
 
-  // Mobile Puzzle State
   const [tiles, setTiles] = useState([]);
   const [selectedTileIndex, setSelectedTileIndex] = useState(null);
   const [startTime, setStartTime] = useState(null);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [isCompleted, setIsCompleted] = useState(false);
 
-  const channelRef = useRef(null);
-
-  // Check URL params for auto-joining room
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get("room");
@@ -77,7 +84,7 @@ export default function App() {
     }
   }, []);
 
-  // Real-Time Pusher Connection
+  // Listen to room channel
   useEffect(() => {
     if (!roomId) return;
 
@@ -85,23 +92,20 @@ export default function App() {
       cluster: PUSHER_CLUSTER,
     });
 
-    // Client events require 'private-' or 'presence-' channel or custom trigger setup
-    const channel = pusher.subscribe(`client-room-${roomId}`);
-    channelRef.current = channel;
+    const channel = pusher.subscribe(`room-${roomId}`);
 
-    // Listen for events across networks
-    channel.bind("client-PLAYER_JOINED", data => {
+    channel.bind("PLAYER_JOINED", data => {
       setPlayers(prev => [...prev.filter(p => p.id !== data.id), data]);
     });
 
-    channel.bind("client-GAME_START", data => {
+    channel.bind("GAME_START", data => {
       setGameStatus("playing");
       setGridSize(data.gridSize);
       setSelectedImage(data.selectedImage);
       setStartTime(Date.now());
     });
 
-    channel.bind("client-PLAYER_FINISHED", data => {
+    channel.bind("PLAYER_FINISHED", data => {
       setPlayers(prev =>
         prev.map(p =>
           p.id === data.id ? { ...p, time: data.time, completed: true } : p,
@@ -109,17 +113,16 @@ export default function App() {
       );
     });
 
-    channel.bind("client-RESET_GAME", () => {
+    channel.bind("RESET_GAME", () => {
       setGameStatus("lobby");
       setIsCompleted(false);
     });
 
     return () => {
-      pusher.unsubscribe(`client-room-${roomId}`);
+      pusher.unsubscribe(`room-${roomId}`);
     };
   }, [roomId]);
 
-  // Timer Effect
   useEffect(() => {
     let interval;
     if (gameStatus === "playing" && !isCompleted && startTime) {
@@ -130,15 +133,13 @@ export default function App() {
     return () => clearInterval(interval);
   }, [gameStatus, isCompleted, startTime]);
 
-  // Start Host Session
   const startHostSession = () => {
     const newRoom = Math.random().toString(36).substring(2, 8).toUpperCase();
     setRoomId(newRoom);
     setRole("host");
   };
 
-  // Join as Player
-  const handlePlayerJoin = e => {
+  const handlePlayerJoin = async e => {
     e.preventDefault();
     if (!playerName.trim()) return;
     const newId = "player_" + Math.random().toString(36).substring(2, 7);
@@ -152,28 +153,21 @@ export default function App() {
     };
     setPlayers(prev => [...prev, playerData]);
 
-    // Send event to Host via Pusher
-    channelRef.current?.trigger("client-PLAYER_JOINED", playerData);
+    await sendRoomEvent(roomId, "PLAYER_JOINED", playerData);
   };
 
-  // Host Starts Game
-  const startPuzzleRound = () => {
+  const startPuzzleRound = async () => {
     setGameStatus("playing");
     setStartTime(Date.now());
-    channelRef.current?.trigger("client-GAME_START", {
-      gridSize,
-      selectedImage,
-    });
+    await sendRoomEvent(roomId, "GAME_START", { gridSize, selectedImage });
   };
 
-  // Host Resets Game
-  const resetGameRound = () => {
+  const resetGameRound = async () => {
     setGameStatus("lobby");
     setPlayers(prev => prev.map(p => ({ ...p, completed: false, time: null })));
-    channelRef.current?.trigger("client-RESET_GAME", {});
+    await sendRoomEvent(roomId, "RESET_GAME", {});
   };
 
-  // Mobile Puzzle Tiles Generator
   useEffect(() => {
     if (gameStatus === "playing" && role === "player") {
       const totalTiles = gridSize * gridSize;
@@ -192,8 +186,7 @@ export default function App() {
     }
   }, [gameStatus, gridSize, role]);
 
-  // Swap Tiles Logic
-  const handleTileClick = index => {
+  const handleTileClick = async index => {
     if (isCompleted) return;
 
     if (selectedTileIndex === null) {
@@ -213,7 +206,7 @@ export default function App() {
         const finalTime = ((Date.now() - startTime) / 1000).toFixed(1);
         confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
 
-        channelRef.current?.trigger("client-PLAYER_FINISHED", {
+        await sendRoomEvent(roomId, "PLAYER_FINISHED", {
           id: currentPlayerId,
           time: parseFloat(finalTime),
         });
@@ -233,9 +226,6 @@ export default function App() {
 
   const joinUrl = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
 
-  // =========================================================================
-  // RENDER LANDING
-  // =========================================================================
   if (role === "landing") {
     return (
       <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-6">
@@ -292,9 +282,6 @@ export default function App() {
     );
   }
 
-  // =========================================================================
-  // RENDER HOST VIEW
-  // =========================================================================
   if (role === "host") {
     const sortedLeaderboard = [...players]
       .filter(p => p.completed)
@@ -478,9 +465,6 @@ export default function App() {
     );
   }
 
-  // =========================================================================
-  // RENDER PARTICIPANT VIEW
-  // =========================================================================
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 max-w-md mx-auto">
       <header className="flex justify-between items-center py-3 border-b border-slate-800 mb-4">
