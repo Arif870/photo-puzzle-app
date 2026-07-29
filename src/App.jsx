@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import Pusher from "pusher-js";
 import { QRCodeSVG } from "qrcode.react";
 import confetti from "canvas-confetti";
 import {
@@ -42,15 +43,17 @@ const DIFFICULTY_LEVELS = [
   { id: "8", label: "Complex (8x8)", grid: 8, count: 64 },
 ];
 
+// Pusher Setup with your credentials
+const PUSHER_KEY = "e73ccec76d7cca0328b8";
+const PUSHER_CLUSTER = "ap2";
+
 export default function App() {
-  // Navigation & Role Detection
-  const [role, setRole] = useState("landing"); // 'landing' | 'host' | 'player'
+  const [role, setRole] = useState("landing");
   const [roomId, setRoomId] = useState("");
 
-  // Game State (Shared context via localStorage/BroadCastChannel simulation for local testing)
   const [selectedImage, setSelectedImage] = useState(PRESET_IMAGES[0].url);
-  const [gridSize, setGridSize] = useState(4); // Default 4x4
-  const [gameStatus, setGameStatus] = useState("lobby"); // 'lobby' | 'playing' | 'finished'
+  const [gridSize, setGridSize] = useState(4);
+  const [gameStatus, setGameStatus] = useState("lobby");
   const [players, setPlayers] = useState([]);
   const [playerName, setPlayerName] = useState("");
   const [currentPlayerId, setCurrentPlayerId] = useState("");
@@ -62,45 +65,59 @@ export default function App() {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [isCompleted, setIsCompleted] = useState(false);
 
-  // Sync state across browser tabs for real-time local demo
   const channelRef = useRef(null);
 
+  // Check URL params for auto-joining room
   useEffect(() => {
-    // Check if user came from a QR code / link with roomId
     const params = new URLSearchParams(window.location.search);
     const room = params.get("room");
     if (room) {
       setRoomId(room);
       setRole("player");
     }
-
-    // Set up BroadcastChannel for cross-tab realtime sync (works instantly on any network when deployed with WebSockets/Firebase)
-    channelRef.current = new BroadcastChannel("photo_puzzle_sync");
-    channelRef.current.onmessage = event => {
-      const { type, payload } = event.data;
-      if (type === "GAME_START") {
-        setGameStatus("playing");
-        setGridSize(payload.gridSize);
-        setSelectedImage(payload.selectedImage);
-        setStartTime(Date.now());
-      } else if (type === "PLAYER_JOINED") {
-        setPlayers(prev => [...prev.filter(p => p.id !== payload.id), payload]);
-      } else if (type === "PLAYER_FINISHED") {
-        setPlayers(prev =>
-          prev.map(p =>
-            p.id === payload.id
-              ? { ...p, time: payload.time, completed: true }
-              : p,
-          ),
-        );
-      } else if (type === "RESET_GAME") {
-        setGameStatus("lobby");
-        setIsCompleted(false);
-      }
-    };
-
-    return () => channelRef.current?.close();
   }, []);
+
+  // Real-Time Pusher Connection
+  useEffect(() => {
+    if (!roomId) return;
+
+    const pusher = new Pusher(PUSHER_KEY, {
+      cluster: PUSHER_CLUSTER,
+    });
+
+    // Client events require 'private-' or 'presence-' channel or custom trigger setup
+    const channel = pusher.subscribe(`client-room-${roomId}`);
+    channelRef.current = channel;
+
+    // Listen for events across networks
+    channel.bind("client-PLAYER_JOINED", data => {
+      setPlayers(prev => [...prev.filter(p => p.id !== data.id), data]);
+    });
+
+    channel.bind("client-GAME_START", data => {
+      setGameStatus("playing");
+      setGridSize(data.gridSize);
+      setSelectedImage(data.selectedImage);
+      setStartTime(Date.now());
+    });
+
+    channel.bind("client-PLAYER_FINISHED", data => {
+      setPlayers(prev =>
+        prev.map(p =>
+          p.id === data.id ? { ...p, time: data.time, completed: true } : p,
+        ),
+      );
+    });
+
+    channel.bind("client-RESET_GAME", () => {
+      setGameStatus("lobby");
+      setIsCompleted(false);
+    });
+
+    return () => {
+      pusher.unsubscribe(`client-room-${roomId}`);
+    };
+  }, [roomId]);
 
   // Timer Effect
   useEffect(() => {
@@ -113,7 +130,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [gameStatus, isCompleted, startTime]);
 
-  // Generate Room Code & Launch Host Mode
+  // Start Host Session
   const startHostSession = () => {
     const newRoom = Math.random().toString(36).substring(2, 8).toUpperCase();
     setRoomId(newRoom);
@@ -135,20 +152,17 @@ export default function App() {
     };
     setPlayers(prev => [...prev, playerData]);
 
-    // Broadcast join event
-    channelRef.current?.postMessage({
-      type: "PLAYER_JOINED",
-      payload: playerData,
-    });
+    // Send event to Host via Pusher
+    channelRef.current?.trigger("client-PLAYER_JOINED", playerData);
   };
 
-  // Host Starts Puzzle
+  // Host Starts Game
   const startPuzzleRound = () => {
     setGameStatus("playing");
     setStartTime(Date.now());
-    channelRef.current?.postMessage({
-      type: "GAME_START",
-      payload: { gridSize, selectedImage },
+    channelRef.current?.trigger("client-GAME_START", {
+      gridSize,
+      selectedImage,
     });
   };
 
@@ -156,10 +170,10 @@ export default function App() {
   const resetGameRound = () => {
     setGameStatus("lobby");
     setPlayers(prev => prev.map(p => ({ ...p, completed: false, time: null })));
-    channelRef.current?.postMessage({ type: "RESET_GAME" });
+    channelRef.current?.trigger("client-RESET_GAME", {});
   };
 
-  // Puzzle Tiles Generator (Mobile)
+  // Mobile Puzzle Tiles Generator
   useEffect(() => {
     if (gameStatus === "playing" && role === "player") {
       const totalTiles = gridSize * gridSize;
@@ -168,7 +182,6 @@ export default function App() {
         currentIndex: index,
       }));
 
-      // Shuffle tiles guaranteed to be different
       let shuffled = [...initialTiles];
       do {
         shuffled = shuffled.sort(() => Math.random() - 0.5);
@@ -179,14 +192,13 @@ export default function App() {
     }
   }, [gameStatus, gridSize, role]);
 
-  // Handle Tile Tap & Swap (Mobile)
+  // Swap Tiles Logic
   const handleTileClick = index => {
     if (isCompleted) return;
 
     if (selectedTileIndex === null) {
       setSelectedTileIndex(index);
     } else {
-      // Swap tiles
       const newTiles = [...tiles];
       const temp = newTiles[selectedTileIndex];
       newTiles[selectedTileIndex] = newTiles[index];
@@ -195,22 +207,20 @@ export default function App() {
       setTiles(newTiles);
       setSelectedTileIndex(null);
 
-      // Check win condition
       const checkWin = newTiles.every((tile, idx) => tile.correctIndex === idx);
       if (checkWin) {
         setIsCompleted(true);
         const finalTime = ((Date.now() - startTime) / 1000).toFixed(1);
         confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
 
-        channelRef.current?.postMessage({
-          type: "PLAYER_FINISHED",
-          payload: { id: currentPlayerId, time: parseFloat(finalTime) },
+        channelRef.current?.trigger("client-PLAYER_FINISHED", {
+          id: currentPlayerId,
+          time: parseFloat(finalTime),
         });
       }
     }
   };
 
-  // Upload Custom Image (Host)
   const handleCustomImageUpload = e => {
     const file = e.target.files[0];
     if (file) {
@@ -224,7 +234,7 @@ export default function App() {
   const joinUrl = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
 
   // =========================================================================
-  // RENDER: LANDING SCREEN
+  // RENDER LANDING
   // =========================================================================
   if (role === "landing") {
     return (
@@ -237,8 +247,7 @@ export default function App() {
             PhotoPuzzle Live
           </h1>
           <p className="text-slate-400 text-sm mb-8">
-            The ultimate icebreaker activity for training sessions and
-            workshops.
+            The ultimate icebreaker activity for training sessions.
           </p>
 
           <div className="space-y-4">
@@ -284,7 +293,7 @@ export default function App() {
   }
 
   // =========================================================================
-  // RENDER: HOST VIEW (LAPTOP DEDICATED)
+  // RENDER HOST VIEW
   // =========================================================================
   if (role === "host") {
     const sortedLeaderboard = [...players]
@@ -293,7 +302,6 @@ export default function App() {
 
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 p-6 flex flex-col">
-        {/* Top Header */}
         <header className="flex justify-between items-center bg-slate-900 border border-slate-800 px-6 py-4 rounded-2xl mb-6">
           <div className="flex items-center gap-3">
             <Sparkles className="w-7 h-7 text-indigo-400" />
@@ -309,16 +317,12 @@ export default function App() {
           </div>
         </header>
 
-        {/* Main 3-Column Layout */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
-          {/* Column 1: Config & Setup */}
           <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between">
             <div>
               <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-indigo-400">
                 <ImageIcon className="w-5 h-5" /> 1. Select Image
               </h2>
-
-              {/* Presets */}
               <div className="grid grid-cols-3 gap-2 mb-4">
                 {PRESET_IMAGES.map(img => (
                   <button
@@ -335,7 +339,6 @@ export default function App() {
                 ))}
               </div>
 
-              {/* Upload Button */}
               <label className="flex items-center justify-center gap-2 w-full py-3 bg-slate-800 hover:bg-slate-750 border border-dashed border-slate-600 rounded-xl cursor-pointer text-xs font-semibold text-slate-300 transition mb-6">
                 <Upload className="w-4 h-4" /> Upload Custom Photo
                 <input
@@ -362,7 +365,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Controls */}
             {gameStatus === "lobby" ? (
               <button
                 onClick={startPuzzleRound}
@@ -381,7 +383,6 @@ export default function App() {
             )}
           </div>
 
-          {/* Column 2: QR Join Portal & Preview */}
           <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center text-center">
             {gameStatus === "lobby" ? (
               <>
@@ -423,10 +424,9 @@ export default function App() {
             )}
           </div>
 
-          {/* Column 3: Live Leaderboard */}
           <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col">
             <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-amber-400">
-              <Trophy className="w-5 h-5" /> Live Leaderboard
+              <Trophy className="w-5 h-5" /> Live Leaderboard & Lobby
             </h2>
 
             <div className="flex-1 overflow-y-auto space-y-2 pr-1">
@@ -449,8 +449,8 @@ export default function App() {
                             #{rank}
                           </div>
                         ) : (
-                          <div className="w-7 h-7 rounded-full bg-slate-800 text-slate-400 font-bold text-xs flex items-center justify-center">
-                            •
+                          <div className="w-7 h-7 rounded-full bg-emerald-500/20 text-emerald-400 font-bold text-xs flex items-center justify-center">
+                            ✓
                           </div>
                         )}
                         <span className="font-semibold text-sm">{p.name}</span>
@@ -462,8 +462,8 @@ export default function App() {
                             <Clock className="w-3.5 h-3.5" /> {p.time}s
                           </span>
                         ) : (
-                          <span className="text-xs text-slate-500 italic">
-                            Solving...
+                          <span className="text-xs text-emerald-400 bg-emerald-950/60 border border-emerald-800/50 px-2.5 py-1 rounded-full">
+                            In Lobby
                           </span>
                         )}
                       </div>
@@ -479,11 +479,10 @@ export default function App() {
   }
 
   // =========================================================================
-  // RENDER: PARTICIPANT VIEW (MOBILE OPTIMIZED)
+  // RENDER PARTICIPANT VIEW
   // =========================================================================
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 max-w-md mx-auto">
-      {/* Mobile Header */}
       <header className="flex justify-between items-center py-3 border-b border-slate-800 mb-4">
         <div className="flex items-center gap-2">
           <Smartphone className="w-5 h-5 text-indigo-400" />
@@ -496,7 +495,6 @@ export default function App() {
         )}
       </header>
 
-      {/* Screen 1: Name Entry Lobby */}
       {gameStatus === "lobby" && !currentPlayerId && (
         <div className="my-auto bg-slate-900 border border-slate-800 rounded-3xl p-6 text-center">
           <h2 className="text-2xl font-bold mb-2">Join Session</h2>
@@ -523,7 +521,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Screen 2: Waiting in Lobby */}
       {gameStatus === "lobby" && currentPlayerId && (
         <div className="my-auto text-center py-12 px-6 bg-slate-900 border border-slate-800 rounded-3xl">
           <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
@@ -535,11 +532,10 @@ export default function App() {
         </div>
       )}
 
-      {/* Screen 3: Interactive Puzzle Grid */}
       {gameStatus === "playing" && (
         <div className="my-auto flex flex-col items-center">
           {isCompleted ? (
-            <div className="w-full bg-slate-900 border border-emerald-500/30 rounded-3xl p-6 text-center animate-bounce">
+            <div className="w-full bg-slate-900 border border-emerald-500/30 rounded-3xl p-6 text-center">
               <CheckCircle2 className="w-16 h-16 text-emerald-400 mx-auto mb-3" />
               <h2 className="text-2xl font-black text-white mb-1">
                 Puzzle Solved!
@@ -556,8 +552,6 @@ export default function App() {
               <p className="text-xs text-center text-slate-400 mb-3">
                 Tap two tiles to swap their positions.
               </p>
-
-              {/* Dynamic Grid Canvas */}
               <div
                 className="grid gap-1 bg-slate-900 p-2 rounded-2xl border border-slate-800 shadow-2xl w-full aspect-square max-w-[350px] mx-auto"
                 style={{
@@ -589,7 +583,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Footer info */}
       <footer className="text-center py-2 text-[10px] text-slate-500 font-mono">
         CONNECTED TO SESSION #{roomId || "---"}
       </footer>
