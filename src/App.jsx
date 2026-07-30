@@ -86,6 +86,23 @@ export default function App() {
   // Explicit modal mode: 'qr' | 'image' | null
   const [modalType, setModalType] = useState(null);
 
+  // Track natural image dimensions so the UI can preserve aspect ratio and avoid cropping
+  const [imageSize, setImageSize] = useState({ width: 1, height: 1 });
+
+  useEffect(() => {
+    if (!selectedImage) return;
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.src = selectedImage;
+    img.onload = () => {
+      setImageSize({ width: img.width || 1, height: img.height || 1 });
+    };
+    img.onerror = () => {
+      // fallback to square if we can't determine size
+      setImageSize({ width: 1, height: 1 });
+    };
+  }, [selectedImage]);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get("room");
@@ -237,52 +254,22 @@ export default function App() {
     }
   };
 
-  // High-Efficiency Canvas Compressor (<25KB string output for Pusher)
+  // Accept and use the full original image (no cropping/resizing)
   const handleCustomImageUpload = e => {
     const file = e.target.files[0];
     if (file) {
       const reader = new FileReader();
       reader.onload = uploadEvent => {
-        const img = new Image();
-        img.src = uploadEvent.target.result;
-        img.onload = () => {
-          const resizeToDataUrl = (maxDim, quality) => {
-            const canvas = document.createElement("canvas");
-            let width = img.width;
-            let height = img.height;
-
-            if (width > height) {
-              if (width > maxDim) {
-                height *= maxDim / width;
-                width = maxDim;
-              }
-            } else {
-              if (height > maxDim) {
-                width *= maxDim / height;
-                height = maxDim;
-              }
-            }
-
-            canvas.width = width;
-            canvas.height = height;
-            const ctx = canvas.getContext("2d");
-            ctx.drawImage(img, 0, 0, width, height);
-            return canvas.toDataURL("image/jpeg", quality);
-          };
-
-          const previewImage = resizeToDataUrl(1200, 0.85);
-          const mobileImage = resizeToDataUrl(500, 0.55);
-
-          const newCustomImage = {
-            id: "custom_" + Date.now(),
-            name: file.name || "Uploaded Photo",
-            url: previewImage,
-          };
-
-          setPresetImages(prev => [...prev, newCustomImage]);
-          setSelectedImage(previewImage);
-          setSharedImage(mobileImage);
+        const dataUrl = uploadEvent.target.result;
+        const newCustomImage = {
+          id: "custom_" + Date.now(),
+          name: file.name || "Uploaded Photo",
+          url: dataUrl,
         };
+        // keep the original image data URL for both preview and sharing so players see the full image
+        setPresetImages(prev => [...prev, newCustomImage]);
+        setSelectedImage(dataUrl);
+        setSharedImage(dataUrl);
       };
       reader.readAsDataURL(file);
     }
@@ -554,17 +541,22 @@ export default function App() {
               </div>
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center">
-                <div
-                  onClick={() => setModalType("image")}
-                  className="relative w-full max-w-md aspect-square rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl cursor-pointer hover:scale-[1.02] transition-transform"
-                >
-                  <img
-                    src={selectedImage}
-                    alt="Puzzle Target"
-                    className="w-full h-full object-cover"
-                  />
-                  <div className="absolute top-3 left-3 bg-slate-950/90 backdrop-blur text-indigo-400 border border-slate-800 px-3 py-1 rounded-xl text-xs font-mono font-bold">
-                    {gridSize}x{gridSize}
+                <div className="w-full h-full flex flex-col items-center justify-center">
+                  <div
+                    onClick={() => setModalType("image")}
+                    className="relative w-full max-w-md rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl cursor-pointer hover:scale-[1.02] transition-transform"
+                    style={{ paddingTop: `${(imageSize.height / imageSize.width) * 100}%` }}
+                  >
+                    <div className="absolute inset-0">
+                      <img
+                        src={selectedImage}
+                        alt="Puzzle Target"
+                        className="absolute inset-0 w-full h-full object-contain"
+                      />
+                      <div className="absolute top-3 left-3 bg-slate-950/90 backdrop-blur text-indigo-400 border border-slate-800 px-3 py-1 rounded-xl text-xs font-mono font-bold">
+                        {gridSize}x{gridSize}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -711,41 +703,46 @@ export default function App() {
           ) : (
             <div className="w-full space-y-4">
               {/* Interactive Game Grid */}
-              <div
-                className="grid gap-1 bg-slate-900 p-2 rounded-2xl border border-slate-800 shadow-2xl w-full aspect-square max-w-[350px] mx-auto"
-                style={{
-                  gridTemplateColumns: `repeat(${gridSize}, minmax(0, 1fr))`,
-                  gridTemplateRows: `repeat(${gridSize}, minmax(0, 1fr))`,
-                }}
-              >
-                {tiles.map((tile, index) => {
-                  const correctRow = Math.floor(tile.correctIndex / gridSize);
-                  const correctCol = tile.correctIndex % gridSize;
-                  const isSelected = selectedTileIndex === index;
+              <div className="relative w-full max-w-[350px] mx-auto" style={{ paddingTop: `${(imageSize.height / imageSize.width) * 100}%` }}>
+                <div
+                  className="absolute inset-0 grid gap-1 bg-slate-900 p-2 rounded-2xl border border-slate-800 shadow-2xl"
+                  style={{
+                    gridTemplateColumns: `repeat(${gridSize}, minmax(0, 1fr))`,
+                    gridTemplateRows: `repeat(${gridSize}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {tiles.map((tile, index) => {
+                    const correctRow = Math.floor(tile.correctIndex / gridSize);
+                    const correctCol = tile.correctIndex % gridSize;
+                    const isSelected = selectedTileIndex === index;
 
-                  return (
-                    <button
-                      key={index}
-                      onClick={() => handleTileClick(index)}
-                      className={`relative w-full h-full rounded-lg overflow-hidden transition-all duration-150 ${isSelected ? "ring-4 ring-amber-400 scale-95 z-10 shadow-2xl" : "active:scale-95"}`}
-                      style={{
-                        backgroundImage: `url(${selectedImage})`,
-                        backgroundSize: `${gridSize * 100}% ${gridSize * 100}%`,
-                        backgroundPosition: `${(correctCol / (gridSize - 1)) * 100}% ${(correctRow / (gridSize - 1)) * 100}%`,
-                      }}
-                    />
-                  );
-                })}
+                    return (
+                      <button
+                        key={index}
+                        onClick={() => handleTileClick(index)}
+                        className={`relative w-full h-full rounded-lg overflow-hidden transition-all duration-150 ${isSelected ? "ring-4 ring-amber-400 scale-95 z-10 shadow-2xl" : "active:scale-95"}`}
+                        style={{
+                          backgroundImage: `url(${selectedImage})`,
+                          backgroundSize: `${gridSize * 100}% ${gridSize * 100}%`,
+                          backgroundPosition: `${(correctCol / (gridSize - 1)) * 100}% ${(correctRow / (gridSize - 1)) * 100}%`,
+                        }}
+                      />
+                    );
+                  })}
+                </div>
               </div>
 
               {/* Large, Clean Bottom Reference Image */}
               <div className="w-full max-w-[350px] mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-2 shadow-xl flex items-center justify-center">
-                <div className="w-full aspect-square max-h-52 rounded-xl overflow-hidden border border-slate-800 shadow-inner">
-                  <img
-                    src={selectedImage}
-                    alt="Target Reference"
-                    className="w-full h-full object-cover"
-                  />
+                <div className="w-full rounded-xl overflow-hidden border border-slate-800 shadow-inner">
+                  <div style={{ width: '100%', paddingTop: `${(imageSize.height / imageSize.width) * 100}%`, position: 'relative' }}>
+                    <img
+                      src={selectedImage}
+                      alt="Target Reference"
+                      className="absolute inset-0 w-full h-full object-contain"
+                      style={{ position: 'absolute', top: 0, left: 0 }}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
