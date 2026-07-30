@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Pusher from "pusher-js";
 import { QRCodeSVG } from "qrcode.react";
 import confetti from "canvas-confetti";
@@ -17,6 +17,7 @@ import {
   ChevronRight,
   Maximize2,
   Minimize2,
+  Loader2,
 } from "lucide-react";
 
 const INITIAL_PRESET_IMAGES = [
@@ -81,10 +82,14 @@ export default function App() {
   const [finalSolveTime, setFinalSolveTime] = useState(null);
   const [isCompleted, setIsCompleted] = useState(false);
 
+  // New state for Mobile Data Chunking (Loading screen)
+  const [isLoadingGame, setIsLoadingGame] = useState(false);
+  const chunkBufferRef = useRef({});
+
   // Explicit modal mode: 'qr' | 'image' | null
   const [modalType, setModalType] = useState(null);
 
-  // Track natural image dimensions so the UI can preserve aspect ratio and avoid cropping
+  // Track natural image dimensions to preserve aspect ratio
   const [imageSize, setImageSize] = useState({ width: 1, height: 1 });
 
   useEffect(() => {
@@ -94,10 +99,7 @@ export default function App() {
     img.onload = () => {
       setImageSize({ width: img.width || 1, height: img.height || 1 });
     };
-    img.onerror = () => {
-      // fallback to square if we can't determine size
-      setImageSize({ width: 1, height: 1 });
-    };
+    img.onerror = () => setImageSize({ width: 1, height: 1 });
   }, [selectedImage]);
 
   useEffect(() => {
@@ -109,6 +111,7 @@ export default function App() {
     }
   }, []);
 
+  // Configure Pusher Real-Time Events
   useEffect(() => {
     if (!roomId) return;
 
@@ -119,17 +122,39 @@ export default function App() {
       setPlayers(prev => [...prev.filter(p => p.id !== data.id), data]);
     });
 
+    // 1. Listen for prep signal (Triggers loading screen)
+    channel.bind("PREPARE_GAME", () => {
+      setIsLoadingGame(true);
+      chunkBufferRef.current = {};
+    });
+
+    // 2. Reassemble image chunks bypasses the 10KB limit
+    channel.bind("IMAGE_CHUNK", data => {
+      chunkBufferRef.current[data.chunkIndex] = data.data;
+      if (Object.keys(chunkBufferRef.current).length === data.totalChunks) {
+        let fullImageStr = "";
+        for (let i = 0; i < data.totalChunks; i++) {
+          fullImageStr += chunkBufferRef.current[i];
+        }
+        setSelectedImage(fullImageStr);
+      }
+    });
+
+    // 3. Start game once host fires the final start signal
     channel.bind("GAME_START", data => {
       setGameStatus("playing");
       setGridSize(data.gridSize);
-      setSharedImage(data.selectedImage);
-      if (role === "player") {
-        setSelectedImage(data.selectedImage);
+
+      if (data.imageUrl) {
+        // If it was a default URL, just use it
+        setSelectedImage(data.imageUrl);
       }
-      setStartTime(data.startTime || Date.now());
-      setModalType(null); // Close modal when game starts
+
+      setStartTime(data.startTime);
+      setModalType(null);
       setIsCompleted(false);
       setFinalSolveTime(null);
+      setIsLoadingGame(false); // Remove loading screen
     });
 
     channel.bind("PLAYER_FINISHED", data => {
@@ -144,12 +169,13 @@ export default function App() {
       setGameStatus("lobby");
       setIsCompleted(false);
       setFinalSolveTime(null);
+      setIsLoadingGame(false);
     });
 
     return () => pusher.unsubscribe(`room-${roomId}`);
   }, [roomId]);
 
-  // Millisecond-accurate timer
+  // Millisecond-accurate stopwatch
   useEffect(() => {
     let interval;
     if (gameStatus === "playing" && !isCompleted && startTime) {
@@ -183,17 +209,51 @@ export default function App() {
     await sendRoomEvent(roomId, "PLAYER_JOINED", playerData);
   };
 
+  // Enterprise Chunking Transmission Function
   const startPuzzleRound = async () => {
-    const roundStart = Date.now();
-    setGameStatus("playing");
-    setStartTime(roundStart);
+    // If it's a default web image (Starts with HTTP)
+    if (sharedImage.startsWith("http")) {
+      const roundStart = Date.now();
+      setGameStatus("playing");
+      setStartTime(roundStart);
+      await sendRoomEvent(roomId, "GAME_START", {
+        gridSize,
+        startTime: roundStart,
+        imageUrl: sharedImage,
+      });
+    }
+    // If it's a custom Base64 Upload -> Chunk it
+    else {
+      // Show loading spinner on mobiles
+      await sendRoomEvent(roomId, "PREPARE_GAME", {});
 
-    // Send the pre-compressed ultra-light image to mobile clients instantly
-    await sendRoomEvent(roomId, "GAME_START", {
-      gridSize,
-      selectedImage: sharedImage,
-      startTime: roundStart,
-    });
+      const CHUNK_SIZE = 7000; // 7KB limit easily bypasses Pusher's 10KB cap
+      const totalChunks = Math.ceil(sharedImage.length / CHUNK_SIZE);
+
+      // Fire chunks rapidly
+      for (let i = 0; i < totalChunks; i++) {
+        const chunkData = sharedImage.substring(
+          i * CHUNK_SIZE,
+          (i + 1) * CHUNK_SIZE,
+        );
+        await sendRoomEvent(roomId, "IMAGE_CHUNK", {
+          chunkIndex: i,
+          totalChunks: totalChunks,
+          data: chunkData,
+        });
+        // Tiny 40ms delay to prevent network flood
+        await new Promise(r => setTimeout(r, 40));
+      }
+
+      // After chunks are dispatched, start the timer
+      const roundStart = Date.now();
+      setGameStatus("playing");
+      setStartTime(roundStart);
+      await sendRoomEvent(roomId, "GAME_START", {
+        gridSize,
+        startTime: roundStart,
+      });
+    }
   };
 
   const resetGameRound = async () => {
@@ -203,7 +263,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (gameStatus === "playing" && role === "player") {
+    if (gameStatus === "playing" && role === "player" && !isLoadingGame) {
       const totalTiles = gridSize * gridSize;
       const initialTiles = Array.from({ length: totalTiles }, (_, index) => ({
         correctIndex: index,
@@ -218,7 +278,7 @@ export default function App() {
       setTiles(shuffled);
       setIsCompleted(false);
     }
-  }, [gameStatus, gridSize, role]);
+  }, [gameStatus, gridSize, role, isLoadingGame]);
 
   const handleTileClick = async index => {
     if (isCompleted) return;
@@ -253,7 +313,7 @@ export default function App() {
     }
   };
 
-  // High-Efficiency Dual Compressor for zero latency uploads
+  // High-Efficiency Dual Compressor
   const handleCustomImageUpload = e => {
     const file = e.target.files[0];
     if (file) {
@@ -278,7 +338,6 @@ export default function App() {
                 height = maxDim;
               }
             }
-
             canvas.width = width;
             canvas.height = height;
             const ctx = canvas.getContext("2d");
@@ -289,19 +348,19 @@ export default function App() {
           // High Resolution for Host display (1000px max)
           const highResUrl = resizeToDataUrl(1000, 0.85);
 
-          // Ultra-Lightweight Resolution for Pusher transmission & Mobile display (350px max to exactly match mobile grid CSS)
-          const mobilePusherUrl = resizeToDataUrl(350, 0.5);
+          // Network Optimized Resolution for Mobile pushing (Max 600px, 0.6 quality = ~50KB)
+          const mobilePusherUrl = resizeToDataUrl(600, 0.6);
 
           const newCustomImage = {
             id: "custom_" + Date.now(),
             name: file.name || "Uploaded Photo",
             url: highResUrl,
-            sharedUrl: mobilePusherUrl, // Store this explicitly for Pusher transmission
+            sharedUrl: mobilePusherUrl,
           };
 
           setPresetImages(prev => [...prev, newCustomImage]);
           setSelectedImage(highResUrl);
-          setSharedImage(mobilePusherUrl); // Sets lightweight string for instant GAME_START delivery
+          setSharedImage(mobilePusherUrl);
           setModalType("image"); // Auto preview on host screen
         };
       };
@@ -385,7 +444,7 @@ export default function App() {
 
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 p-6 flex flex-col font-sans">
-        {/* Modal Overlay: Explicitly handles QR or IMAGE */}
+        {/* Modal Overlay */}
         {modalType && (
           <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center p-6">
             <button
@@ -457,16 +516,14 @@ export default function App() {
                   Selection
                 </h2>
 
-                {/* Dynamically displays uploaded & default images */}
                 <div className="grid grid-cols-3 gap-2 mb-3 max-h-48 overflow-y-auto pr-1">
                   {presetImages.map(img => (
                     <button
                       key={img.id}
                       onClick={() => {
                         setSelectedImage(img.url);
-                        // Fallback to url if sharedUrl isn't provided (for presets)
                         setSharedImage(img.sharedUrl || img.url);
-                        setModalType("image"); // Opens selected image in fullscreen
+                        setModalType("image");
                       }}
                       className={`relative rounded-lg overflow-hidden border-2 h-16 transition ${selectedImage === img.url ? "border-indigo-500 ring-2 ring-indigo-500/20" : "border-transparent opacity-50 hover:opacity-100"}`}
                       title="Click to select & preview full screen"
@@ -576,23 +633,21 @@ export default function App() {
               </div>
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center">
-                <div className="w-full h-full flex flex-col items-center justify-center">
-                  <div
-                    onClick={() => setModalType("image")}
-                    className="relative w-full max-w-md rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl cursor-pointer hover:scale-[1.02] transition-transform"
-                    style={{
-                      paddingTop: `${(imageSize.height / imageSize.width) * 100}%`,
-                    }}
-                  >
-                    <div className="absolute inset-0">
-                      <img
-                        src={selectedImage}
-                        alt="Puzzle Target"
-                        className="absolute inset-0 w-full h-full object-contain"
-                      />
-                      <div className="absolute top-3 left-3 bg-slate-950/90 backdrop-blur text-indigo-400 border border-slate-800 px-3 py-1 rounded-xl text-xs font-mono font-bold">
-                        {gridSize}x{gridSize}
-                      </div>
+                <div
+                  onClick={() => setModalType("image")}
+                  className="relative w-full max-w-md rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl cursor-pointer hover:scale-[1.02] transition-transform"
+                  style={{
+                    paddingTop: `${(imageSize.height / imageSize.width) * 100}%`,
+                  }}
+                >
+                  <div className="absolute inset-0">
+                    <img
+                      src={selectedImage}
+                      alt="Puzzle Target"
+                      className="absolute inset-0 w-full h-full object-contain"
+                    />
+                    <div className="absolute top-3 left-3 bg-slate-950/90 backdrop-blur text-indigo-400 border border-slate-800 px-3 py-1 rounded-xl text-xs font-mono font-bold">
+                      {gridSize}x{gridSize}
                     </div>
                   </div>
                 </div>
@@ -618,7 +673,7 @@ export default function App() {
               {sortedPlayers.length === 0 ? (
                 <div className="h-64 flex flex-col items-center justify-center text-slate-500 text-xs text-center p-4">
                   <Users className="w-8 h-8 mb-2 opacity-30" />
-                  Waiting for participants to scan the QR code...
+                  Waiting for participants...
                 </div>
               ) : (
                 sortedPlayers.map(p => {
@@ -646,7 +701,6 @@ export default function App() {
                           {p.name}
                         </span>
                       </div>
-
                       <div>
                         {p.completed ? (
                           <span className="font-mono text-emerald-400 font-bold text-xs flex items-center gap-1 bg-emerald-950/60 border border-emerald-800/50 px-2.5 py-1 rounded-full">
@@ -676,9 +730,8 @@ export default function App() {
   // =========================================================================
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 max-w-md mx-auto font-sans">
-      {/* Clean Mobile Top Bar: ONLY Live Timer */}
       <header className="flex justify-center items-center py-2 mb-2">
-        {gameStatus === "playing" && (
+        {gameStatus === "playing" && !isLoadingGame && (
           <div className="font-mono text-emerald-400 font-black text-2xl flex items-center gap-2 bg-slate-900 border border-slate-800 px-6 py-2 rounded-2xl shadow-xl">
             <Clock className="w-5 h-5" />{" "}
             {isCompleted ? `${finalSolveTime}s` : `${elapsedTime}s`}
@@ -722,7 +775,20 @@ export default function App() {
         </div>
       )}
 
-      {gameStatus === "playing" && (
+      {/* NEW LOADING SCREEN FOR CHUNKING */}
+      {isLoadingGame && (
+        <div className="my-auto text-center py-12 px-6 bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl">
+          <Loader2 className="w-12 h-12 text-indigo-500 animate-spin mx-auto mb-4" />
+          <h3 className="text-2xl font-black mb-1 text-white">
+            Preparing Puzzle...
+          </h3>
+          <p className="text-xs text-slate-400 mt-2 font-mono uppercase tracking-wider">
+            Downloading Image Assets
+          </p>
+        </div>
+      )}
+
+      {gameStatus === "playing" && !isLoadingGame && (
         <div className="my-auto flex flex-col items-center w-full space-y-4">
           {isCompleted ? (
             <div className="w-full bg-slate-900 border border-emerald-500/30 rounded-3xl p-6 text-center shadow-2xl">
@@ -739,7 +805,6 @@ export default function App() {
             </div>
           ) : (
             <div className="w-full space-y-4">
-              {/* Interactive Game Grid */}
               <div
                 className="relative w-full max-w-[350px] mx-auto"
                 style={{
@@ -774,7 +839,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Large, Clean Bottom Reference Image */}
               <div className="w-full max-w-[350px] mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-2 shadow-xl flex items-center justify-center">
                 <div className="w-full rounded-xl overflow-hidden border border-slate-800 shadow-inner">
                   <div
