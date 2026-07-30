@@ -189,9 +189,69 @@ export default function App() {
     const roundStart = Date.now();
     setGameStatus("playing");
     setStartTime(roundStart);
+
+    // Prepare an image URL that's safe to send to players.
+    // If sharedImage is a large data URL, upload a compressed preview first so the
+    // Pusher payload stays small and players can fetch an accessible URL.
+    let imageForPlayers = sharedImage;
+    try {
+      if (sharedImage && sharedImage.startsWith && sharedImage.startsWith("data:")) {
+        const img = new Image();
+        img.src = sharedImage;
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+        });
+
+        // Resize to a reasonable preview size for sharing
+        const maxDim = 800;
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > maxDim) {
+            height *= maxDim / width;
+            width = maxDim;
+          }
+        } else {
+          if (height > maxDim) {
+            width *= maxDim / height;
+            height = maxDim;
+          }
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        const previewDataUrl = canvas.toDataURL("image/jpeg", 0.8);
+
+        try {
+          const resp = await fetch("/api/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ dataUrl: previewDataUrl, filename: "shared_preview.jpg" }),
+          });
+          const json = await resp.json();
+          if (resp.ok && json && json.path) {
+            imageForPlayers = window.location.origin + json.path;
+          } else {
+            console.warn("Preview upload failed, sending data URL to players");
+            imageForPlayers = sharedImage;
+          }
+        } catch (err) {
+          console.warn("Upload preview failed:", err);
+          imageForPlayers = sharedImage;
+        }
+      }
+    } catch (err) {
+      console.error("Failed to prepare shared image for players:", err);
+      imageForPlayers = sharedImage;
+    }
+
     await sendRoomEvent(roomId, "GAME_START", {
       gridSize,
-      selectedImage: sharedImage,
+      selectedImage: imageForPlayers,
       startTime: roundStart,
     });
   };
