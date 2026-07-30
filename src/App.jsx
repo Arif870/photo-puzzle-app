@@ -92,7 +92,6 @@ export default function App() {
   useEffect(() => {
     if (!selectedImage) return;
     const img = new Image();
-    img.crossOrigin = "Anonymous";
     img.src = selectedImage;
     img.onload = () => {
       setImageSize({ width: img.width || 1, height: img.height || 1 });
@@ -260,16 +259,93 @@ export default function App() {
     if (file) {
       const reader = new FileReader();
       reader.onload = uploadEvent => {
-        const dataUrl = uploadEvent.target.result;
-        const newCustomImage = {
-          id: "custom_" + Date.now(),
-          name: file.name || "Uploaded Photo",
-          url: dataUrl,
+        const originalDataUrl = uploadEvent.target.result;
+        const img = new Image();
+        img.src = originalDataUrl;
+        img.onload = async () => {
+          // Create a smaller preview for fast mobile delivery
+          const resizeToDataUrl = (maxDim, quality) => {
+            const canvas = document.createElement("canvas");
+            let width = img.width;
+            let height = img.height;
+
+            if (width > height) {
+              if (width > maxDim) {
+                height *= maxDim / width;
+                width = maxDim;
+              }
+            } else {
+              if (height > maxDim) {
+                width *= maxDim / height;
+                height = maxDim;
+              }
+            }
+
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, width, height);
+            return canvas.toDataURL("image/jpeg", quality);
+          };
+
+          // Preview used for sharing to players (smaller)
+          const previewDataUrl = resizeToDataUrl(800, 0.8);
+
+          try {
+            const resp = await fetch("/api/upload", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ dataUrl: previewDataUrl, filename: file.name }),
+            });
+            const json = await resp.json();
+            if (resp.ok && json && json.path) {
+              const sharedUrl = window.location.origin + json.path;
+
+              const newCustomImage = {
+                id: "custom_" + Date.now(),
+                name: file.name || "Uploaded Photo",
+                url: sharedUrl,
+              };
+
+              // Presenter keeps original data URL locally for highest fidelity preview
+              setPresetImages(prev => [...prev, newCustomImage]);
+              setSelectedImage(originalDataUrl);
+              setSharedImage(sharedUrl);
+            } else {
+              // fallback to using data URL if upload failed
+              const newCustomImage = {
+                id: "custom_" + Date.now(),
+                name: file.name || "Uploaded Photo",
+                url: originalDataUrl,
+              };
+              setPresetImages(prev => [...prev, newCustomImage]);
+              setSelectedImage(originalDataUrl);
+              setSharedImage(originalDataUrl);
+            }
+          } catch (err) {
+            console.error("Upload failed, falling back to data URL:", err);
+            const newCustomImage = {
+              id: "custom_" + Date.now(),
+              name: file.name || "Uploaded Photo",
+              url: originalDataUrl,
+            };
+            setPresetImages(prev => [...prev, newCustomImage]);
+            setSelectedImage(originalDataUrl);
+            setSharedImage(originalDataUrl);
+          }
         };
-        // keep the original image data URL for both preview and sharing so players see the full image
-        setPresetImages(prev => [...prev, newCustomImage]);
-        setSelectedImage(dataUrl);
-        setSharedImage(dataUrl);
+
+        img.onerror = () => {
+          // Fallback: just use the data URL
+          const newCustomImage = {
+            id: "custom_" + Date.now(),
+            name: file.name || "Uploaded Photo",
+            url: originalDataUrl,
+          };
+          setPresetImages(prev => [...prev, newCustomImage]);
+          setSelectedImage(originalDataUrl);
+          setSharedImage(originalDataUrl);
+        };
       };
       reader.readAsDataURL(file);
     }
