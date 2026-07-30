@@ -67,9 +67,7 @@ export default function App() {
   const [selectedImage, setSelectedImage] = useState(
     INITIAL_PRESET_IMAGES[0].url,
   );
-  const [sharedImage, setSharedImage] = useState(
-    INITIAL_PRESET_IMAGES[0].url,
-  );
+  const [sharedImage, setSharedImage] = useState(INITIAL_PRESET_IMAGES[0].url);
   const [gridSize, setGridSize] = useState(2);
   const [gameStatus, setGameStatus] = useState("lobby");
   const [players, setPlayers] = useState([]);
@@ -92,7 +90,6 @@ export default function App() {
   useEffect(() => {
     if (!selectedImage) return;
     const img = new Image();
-    img.crossOrigin = "Anonymous";
     img.src = selectedImage;
     img.onload = () => {
       setImageSize({ width: img.width || 1, height: img.height || 1 });
@@ -190,9 +187,76 @@ export default function App() {
     const roundStart = Date.now();
     setGameStatus("playing");
     setStartTime(roundStart);
+
+    // Prepare an image URL that's safe to send to players.
+    // If sharedImage is a large data URL, upload a compressed preview first so the
+    // Pusher payload stays small and players can fetch an accessible URL.
+    let imageForPlayers = sharedImage;
+    try {
+      if (
+        sharedImage &&
+        sharedImage.startsWith &&
+        sharedImage.startsWith("data:")
+      ) {
+        const img = new Image();
+        img.src = sharedImage;
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+        });
+
+        // Resize to a reasonable preview size for sharing
+        const maxDim = 800;
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > maxDim) {
+            height *= maxDim / width;
+            width = maxDim;
+          }
+        } else {
+          if (height > maxDim) {
+            width *= maxDim / height;
+            height = maxDim;
+          }
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        const previewDataUrl = canvas.toDataURL("image/jpeg", 0.8);
+
+        try {
+          const resp = await fetch("/api/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              dataUrl: previewDataUrl,
+              filename: "shared_preview.jpg",
+            }),
+          });
+          const json = await resp.json();
+          if (resp.ok && json && json.path) {
+            imageForPlayers = window.location.origin + json.path;
+          } else {
+            console.warn("Preview upload failed, sending data URL to players");
+            imageForPlayers = sharedImage;
+          }
+        } catch (err) {
+          console.warn("Upload preview failed:", err);
+          imageForPlayers = sharedImage;
+        }
+      }
+    } catch (err) {
+      console.error("Failed to prepare shared image for players:", err);
+      imageForPlayers = sharedImage;
+    }
+
     await sendRoomEvent(roomId, "GAME_START", {
       gridSize,
-      selectedImage: sharedImage,
+      selectedImage: imageForPlayers,
       startTime: roundStart,
     });
   };
@@ -260,16 +324,96 @@ export default function App() {
     if (file) {
       const reader = new FileReader();
       reader.onload = uploadEvent => {
-        const dataUrl = uploadEvent.target.result;
-        const newCustomImage = {
-          id: "custom_" + Date.now(),
-          name: file.name || "Uploaded Photo",
-          url: dataUrl,
+        const originalDataUrl = uploadEvent.target.result;
+        const img = new Image();
+        img.src = originalDataUrl;
+        img.onload = async () => {
+          // Create a smaller preview for fast mobile delivery
+          const resizeToDataUrl = (maxDim, quality) => {
+            const canvas = document.createElement("canvas");
+            let width = img.width;
+            let height = img.height;
+
+            if (width > height) {
+              if (width > maxDim) {
+                height *= maxDim / width;
+                width = maxDim;
+              }
+            } else {
+              if (height > maxDim) {
+                width *= maxDim / height;
+                height = maxDim;
+              }
+            }
+
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, width, height);
+            return canvas.toDataURL("image/jpeg", quality);
+          };
+
+          // Preview used for sharing to players (smaller)
+          const previewDataUrl = resizeToDataUrl(800, 0.8);
+
+          try {
+            const resp = await fetch("/api/upload", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                dataUrl: previewDataUrl,
+                filename: file.name,
+              }),
+            });
+            const json = await resp.json();
+            if (resp.ok && json && json.path) {
+              const sharedUrl = window.location.origin + json.path;
+
+              const newCustomImage = {
+                id: "custom_" + Date.now(),
+                name: file.name || "Uploaded Photo",
+                url: sharedUrl,
+              };
+
+              // Presenter keeps original data URL locally for highest fidelity preview
+              setPresetImages(prev => [...prev, newCustomImage]);
+              setSelectedImage(originalDataUrl);
+              setSharedImage(sharedUrl);
+            } else {
+              // fallback to using data URL if upload failed
+              const newCustomImage = {
+                id: "custom_" + Date.now(),
+                name: file.name || "Uploaded Photo",
+                url: originalDataUrl,
+              };
+              setPresetImages(prev => [...prev, newCustomImage]);
+              setSelectedImage(originalDataUrl);
+              setSharedImage(originalDataUrl);
+            }
+          } catch (err) {
+            console.error("Upload failed, falling back to data URL:", err);
+            const newCustomImage = {
+              id: "custom_" + Date.now(),
+              name: file.name || "Uploaded Photo",
+              url: originalDataUrl,
+            };
+            setPresetImages(prev => [...prev, newCustomImage]);
+            setSelectedImage(originalDataUrl);
+            setSharedImage(originalDataUrl);
+          }
         };
-        // keep the original image data URL for both preview and sharing so players see the full image
-        setPresetImages(prev => [...prev, newCustomImage]);
-        setSelectedImage(dataUrl);
-        setSharedImage(dataUrl);
+
+        img.onerror = () => {
+          // Fallback: just use the data URL
+          const newCustomImage = {
+            id: "custom_" + Date.now(),
+            name: file.name || "Uploaded Photo",
+            url: originalDataUrl,
+          };
+          setPresetImages(prev => [...prev, newCustomImage]);
+          setSelectedImage(originalDataUrl);
+          setSharedImage(originalDataUrl);
+        };
       };
       reader.readAsDataURL(file);
     }
@@ -545,7 +689,9 @@ export default function App() {
                   <div
                     onClick={() => setModalType("image")}
                     className="relative w-full max-w-md rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl cursor-pointer hover:scale-[1.02] transition-transform"
-                    style={{ paddingTop: `${(imageSize.height / imageSize.width) * 100}%` }}
+                    style={{
+                      paddingTop: `${(imageSize.height / imageSize.width) * 100}%`,
+                    }}
                   >
                     <div className="absolute inset-0">
                       <img
@@ -703,7 +849,12 @@ export default function App() {
           ) : (
             <div className="w-full space-y-4">
               {/* Interactive Game Grid */}
-              <div className="relative w-full max-w-[350px] mx-auto" style={{ paddingTop: `${(imageSize.height / imageSize.width) * 100}%` }}>
+              <div
+                className="relative w-full max-w-[350px] mx-auto"
+                style={{
+                  paddingTop: `${(imageSize.height / imageSize.width) * 100}%`,
+                }}
+              >
                 <div
                   className="absolute inset-0 grid gap-1 bg-slate-900 p-2 rounded-2xl border border-slate-800 shadow-2xl"
                   style={{
@@ -735,12 +886,18 @@ export default function App() {
               {/* Large, Clean Bottom Reference Image */}
               <div className="w-full max-w-[350px] mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-2 shadow-xl flex items-center justify-center">
                 <div className="w-full rounded-xl overflow-hidden border border-slate-800 shadow-inner">
-                  <div style={{ width: '100%', paddingTop: `${(imageSize.height / imageSize.width) * 100}%`, position: 'relative' }}>
+                  <div
+                    style={{
+                      width: "100%",
+                      paddingTop: `${(imageSize.height / imageSize.width) * 100}%`,
+                      position: "relative",
+                    }}
+                  >
                     <img
                       src={selectedImage}
                       alt="Target Reference"
                       className="absolute inset-0 w-full h-full object-contain"
-                      style={{ position: 'absolute', top: 0, left: 0 }}
+                      style={{ position: "absolute", top: 0, left: 0 }}
                     />
                   </div>
                 </div>
