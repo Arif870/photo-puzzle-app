@@ -15,14 +15,11 @@ import {
   Smartphone,
   Monitor,
   ChevronRight,
-  Eye,
-  ChevronDown,
-  ChevronUp,
   Maximize2,
   Minimize2,
 } from "lucide-react";
 
-const PRESET_IMAGES = [
+const INITIAL_PRESET_IMAGES = [
   {
     id: "1",
     name: "Mountain Peak",
@@ -66,7 +63,11 @@ export default function App() {
   const [role, setRole] = useState("landing");
   const [roomId, setRoomId] = useState("");
 
-  const [selectedImage, setSelectedImage] = useState(PRESET_IMAGES[0].url);
+  // Image gallery state (includes custom uploads dynamically)
+  const [presetImages, setPresetImages] = useState(INITIAL_PRESET_IMAGES);
+  const [selectedImage, setSelectedImage] = useState(
+    INITIAL_PRESET_IMAGES[0].url,
+  );
   const [gridSize, setGridSize] = useState(2);
   const [gameStatus, setGameStatus] = useState("lobby");
   const [players, setPlayers] = useState([]);
@@ -76,11 +77,11 @@ export default function App() {
   const [tiles, setTiles] = useState([]);
   const [selectedTileIndex, setSelectedTileIndex] = useState(null);
   const [startTime, setStartTime] = useState(null);
-  const [elapsedTime, setElapsedTime] = useState(0);
+  const [elapsedTime, setElapsedTime] = useState("0.0");
+  const [finalSolveTime, setFinalSolveTime] = useState(null);
   const [isCompleted, setIsCompleted] = useState(false);
-  const [showMobilePreview, setShowMobilePreview] = useState(true);
 
-  // Presenter Fullscreen Modal State
+  // Host Fullscreen Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   useEffect(() => {
@@ -92,6 +93,7 @@ export default function App() {
     }
   }, []);
 
+  // Real-Time Socket Connection
   useEffect(() => {
     if (!roomId) return;
 
@@ -106,8 +108,10 @@ export default function App() {
       setGameStatus("playing");
       setGridSize(data.gridSize);
       setSelectedImage(data.selectedImage);
-      setStartTime(Date.now());
-      setIsModalOpen(false); // Close modal when game starts
+      setStartTime(data.startTime || Date.now());
+      setIsModalOpen(false);
+      setIsCompleted(false);
+      setFinalSolveTime(null);
     });
 
     channel.bind("PLAYER_FINISHED", data => {
@@ -121,16 +125,19 @@ export default function App() {
     channel.bind("RESET_GAME", () => {
       setGameStatus("lobby");
       setIsCompleted(false);
+      setFinalSolveTime(null);
     });
 
     return () => pusher.unsubscribe(`room-${roomId}`);
   }, [roomId]);
 
+  // Millisecond Precision Stopwatch
   useEffect(() => {
     let interval;
     if (gameStatus === "playing" && !isCompleted && startTime) {
       interval = setInterval(() => {
-        setElapsedTime(((Date.now() - startTime) / 1000).toFixed(1));
+        const now = Date.now();
+        setElapsedTime(((now - startTime) / 1000).toFixed(1));
       }, 100);
     }
     return () => clearInterval(interval);
@@ -159,9 +166,14 @@ export default function App() {
   };
 
   const startPuzzleRound = async () => {
+    const roundStart = Date.now();
     setGameStatus("playing");
-    setStartTime(Date.now());
-    await sendRoomEvent(roomId, "GAME_START", { gridSize, selectedImage });
+    setStartTime(roundStart);
+    await sendRoomEvent(roomId, "GAME_START", {
+      gridSize,
+      selectedImage,
+      startTime: roundStart,
+    });
   };
 
   const resetGameRound = async () => {
@@ -170,6 +182,7 @@ export default function App() {
     await sendRoomEvent(roomId, "RESET_GAME", {});
   };
 
+  // Generate & Shuffle Mobile Tiles
   useEffect(() => {
     if (gameStatus === "playing" && role === "player") {
       const totalTiles = gridSize * gridSize;
@@ -204,20 +217,25 @@ export default function App() {
 
       const checkWin = newTiles.every((tile, idx) => tile.correctIndex === idx);
       if (checkWin) {
-        setIsCompleted(true);
-        const finalTime = parseFloat(
-          ((Date.now() - startTime) / 1000).toFixed(1),
+        const finishTimestamp = Date.now();
+        // Exact millisecond calculation shared with host
+        const exactTime = parseFloat(
+          ((finishTimestamp - startTime) / 1000).toFixed(1),
         );
+
+        setIsCompleted(true);
+        setFinalSolveTime(exactTime);
         confetti({ particleCount: 120, spread: 80, origin: { y: 0.6 } });
 
         await sendRoomEvent(roomId, "PLAYER_FINISHED", {
           id: currentPlayerId,
-          time: finalTime,
+          time: exactTime,
         });
       }
     }
   };
 
+  // Add Uploaded Image Directly to Gallery Presets
   const handleCustomImageUpload = e => {
     const file = e.target.files[0];
     if (file) {
@@ -247,7 +265,16 @@ export default function App() {
           canvas.height = height;
           const ctx = canvas.getContext("2d");
           ctx.drawImage(img, 0, 0, width, height);
-          setSelectedImage(canvas.toDataURL("image/jpeg", 0.85));
+          const compressedDataUrl = canvas.toDataURL("image/jpeg", 0.85);
+
+          const newCustomImage = {
+            id: "custom_" + Date.now(),
+            name: file.name || "Uploaded Photo",
+            url: compressedDataUrl,
+          };
+
+          setPresetImages(prev => [...prev, newCustomImage]);
+          setSelectedImage(compressedDataUrl);
         };
       };
       reader.readAsDataURL(file);
@@ -256,6 +283,9 @@ export default function App() {
 
   const joinUrl = `${window.location.origin}${window.location.pathname}?room=${roomId}`;
 
+  // =========================================================================
+  // LANDING PAGE
+  // =========================================================================
   if (role === "landing") {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-6 antialiased">
@@ -312,6 +342,9 @@ export default function App() {
     );
   }
 
+  // =========================================================================
+  // HOST PRESENTER DASHBOARD
+  // =========================================================================
   if (role === "host") {
     const sortedPlayers = [...players].sort((a, b) => {
       if (a.completed && b.completed) return a.time - b.time;
@@ -324,7 +357,7 @@ export default function App() {
 
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 p-6 flex flex-col font-sans">
-        {/* Fullscreen Modal Toggle Overlay */}
+        {/* Fullscreen Overlay */}
         {isModalOpen && (
           <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center p-6">
             <button
@@ -351,9 +384,6 @@ export default function App() {
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center max-w-3xl w-full">
-                <span className="text-sm font-mono text-amber-400 uppercase tracking-widest mb-3 bg-amber-950/60 border border-amber-800/50 px-4 py-1.5 rounded-full">
-                  Fullscreen Puzzle Target Reference
-                </span>
                 <div className="w-full aspect-square max-h-[80vh] rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl">
                   <img
                     src={selectedImage}
@@ -366,6 +396,7 @@ export default function App() {
           </div>
         )}
 
+        {/* Top Bar */}
         <header className="flex justify-between items-center bg-slate-900/80 backdrop-blur border border-slate-800 px-6 py-4 rounded-2xl mb-6 shadow-xl">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-indigo-400">
@@ -389,6 +420,7 @@ export default function App() {
         </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
+          {/* Controls Column */}
           <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between shadow-xl">
             <div className="space-y-6">
               <div>
@@ -396,12 +428,17 @@ export default function App() {
                   <ImageIcon className="w-4 h-4 text-indigo-400" /> Image
                   Selection
                 </h2>
-                <div className="grid grid-cols-3 gap-2 mb-3">
-                  {PRESET_IMAGES.map(img => (
+                {/* Dynamically includes uploaded images alongside defaults */}
+                <div className="grid grid-cols-3 gap-2 mb-3 max-h-48 overflow-y-auto pr-1">
+                  {presetImages.map(img => (
                     <button
                       key={img.id}
-                      onClick={() => setSelectedImage(img.url)}
+                      onClick={() => {
+                        setSelectedImage(img.url);
+                        setIsModalOpen(true); // Auto fullscreen on click
+                      }}
                       className={`relative rounded-lg overflow-hidden border-2 h-16 transition ${selectedImage === img.url ? "border-indigo-500 ring-2 ring-indigo-500/20" : "border-transparent opacity-50 hover:opacity-100"}`}
+                      title="Click to select & project full screen"
                     >
                       <img
                         src={img.url}
@@ -463,12 +500,11 @@ export default function App() {
             </div>
           </div>
 
+          {/* Projection Area */}
           <div className="lg:col-span-6 bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center relative overflow-hidden shadow-xl">
-            {/* Fullscreen Expand Action Button */}
             <button
               onClick={() => setIsModalOpen(true)}
               className="absolute top-4 right-4 p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl flex items-center gap-1.5 text-xs font-bold border border-slate-700 transition shadow-md z-10"
-              title="Toggle Fullscreen Projection Mode"
             >
               <Maximize2 className="w-4 h-4 text-indigo-400" /> Fullscreen Mode
             </button>
@@ -484,35 +520,33 @@ export default function App() {
                   </h2>
                 </div>
 
-                <div className="bg-white p-6 rounded-3xl shadow-2xl my-4 border-4 border-slate-800 relative group">
+                <div
+                  onClick={() => setIsModalOpen(true)}
+                  className="bg-white p-6 rounded-3xl shadow-2xl my-4 border-4 border-slate-800 cursor-pointer hover:scale-105 transition-transform"
+                >
                   <QRCodeSVG value={joinUrl} size={220} />
                 </div>
 
                 <div className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <Eye className="w-5 h-5 text-indigo-400" />
-                    <div>
-                      <div className="text-xs font-bold">
-                        Selected Image Target
-                      </div>
-                      <div className="text-[10px] text-slate-400 font-mono">
-                        {gridSize}x{gridSize} Tiles Grid
-                      </div>
-                    </div>
+                    <span className="text-xs font-bold text-slate-300">
+                      Selected Target Image
+                    </span>
                   </div>
                   <img
                     src={selectedImage}
                     alt="Target Preview"
-                    className="w-14 h-14 object-cover rounded-xl border border-slate-700"
+                    onClick={() => setIsModalOpen(true)}
+                    className="w-14 h-14 object-cover rounded-xl border border-slate-700 cursor-pointer hover:scale-110 transition-transform"
                   />
                 </div>
               </div>
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center">
-                <span className="text-xs font-mono text-amber-400 uppercase tracking-widest mb-3 bg-amber-950/60 border border-amber-800/50 px-3 py-1 rounded-full">
-                  Target Puzzle Reference
-                </span>
-                <div className="relative w-full max-w-md aspect-square rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl">
+                <div
+                  onClick={() => setIsModalOpen(true)}
+                  className="relative w-full max-w-md aspect-square rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl cursor-pointer hover:scale-[1.02] transition-transform"
+                >
                   <img
                     src={selectedImage}
                     alt="Puzzle Target"
@@ -526,6 +560,7 @@ export default function App() {
             )}
           </div>
 
+          {/* Live Leaderboard Column */}
           <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col shadow-xl">
             <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-3">
               <h2 className="text-sm font-bold flex items-center gap-2 text-amber-400 uppercase tracking-wider">
@@ -597,18 +632,16 @@ export default function App() {
   }
 
   // =========================================================================
-  // MOBILE PARTICIPANT INTERFACE WITH BOTTOM REFERENCE IMAGE CARD
+  // MOBILE PARTICIPANT INTERFACE
   // =========================================================================
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 max-w-md mx-auto font-sans">
-      <header className="flex justify-between items-center py-3 border-b border-slate-800 mb-2">
-        <div className="flex items-center gap-2">
-          <Smartphone className="w-5 h-5 text-indigo-400" />
-          <span className="font-bold text-sm">PhotoPuzzle Live</span>
-        </div>
+      {/* Ultra-Clean Header: ONLY TIMER */}
+      <header className="flex justify-center items-center py-2 mb-2">
         {gameStatus === "playing" && (
-          <div className="font-mono text-emerald-400 font-bold text-base flex items-center gap-1 bg-slate-900 border border-slate-800 px-3 py-1 rounded-full">
-            <Clock className="w-4 h-4" /> {elapsedTime}s
+          <div className="font-mono text-emerald-400 font-black text-2xl flex items-center gap-2 bg-slate-900 border border-slate-800 px-6 py-2 rounded-2xl shadow-xl">
+            <Clock className="w-5 h-5" />{" "}
+            {isCompleted ? `${finalSolveTime}s` : `${elapsedTime}s`}
           </div>
         )}
       </header>
@@ -661,16 +694,12 @@ export default function App() {
                 Your time has been recorded on the presenter leaderboard.
               </p>
               <div className="inline-block bg-slate-950 px-6 py-3 rounded-2xl border border-slate-800 font-mono text-3xl font-black text-emerald-400 shadow-inner">
-                {elapsedTime}s
+                {finalSolveTime}s
               </div>
             </div>
           ) : (
             <div className="w-full space-y-4">
-              <p className="text-[11px] font-semibold text-center text-slate-400">
-                Tap two tiles to swap positions
-              </p>
-
-              {/* Main Game Grid */}
+              {/* Interactive Game Grid */}
               <div
                 className="grid gap-1 bg-slate-900 p-2 rounded-2xl border border-slate-800 shadow-2xl w-full aspect-square max-w-[350px] mx-auto"
                 style={{
@@ -698,43 +727,15 @@ export default function App() {
                 })}
               </div>
 
-              {/* 👈 TARGET MINI IMAGE REFERENCE AT BOTTOM */}
-              <div className="w-full max-w-[350px] mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-2.5 shadow-md flex flex-col transition-all">
-                <button
-                  onClick={() => setShowMobilePreview(!showMobilePreview)}
-                  className="flex items-center justify-between w-full text-xs font-bold text-slate-300 px-1"
-                >
-                  <span className="flex items-center gap-1.5 text-indigo-400">
-                    <Eye className="w-3.5 h-3.5" /> Target Photo Reference
-                  </span>
-                  {showMobilePreview ? (
-                    <ChevronDown className="w-4 h-4 text-slate-400" />
-                  ) : (
-                    <ChevronUp className="w-4 h-4 text-slate-400" />
-                  )}
-                </button>
-
-                {showMobilePreview && (
-                  <div className="mt-2 flex items-center gap-3 bg-slate-950 p-2 rounded-xl border border-slate-800">
-                    <img
-                      src={selectedImage}
-                      alt="Target Mini Bottom"
-                      className="w-16 h-16 object-cover rounded-lg border border-slate-700 shadow-inner"
-                    />
-                    <div className="text-[11px] text-slate-400">
-                      <p className="text-slate-200 font-semibold mb-0.5">
-                        Reference Image
-                      </p>
-                      <p>
-                        Grid:{" "}
-                        <span className="font-mono text-indigo-400 font-bold">
-                          {gridSize}x{gridSize}
-                        </span>{" "}
-                        ({gridSize * gridSize} tiles)
-                      </p>
-                    </div>
-                  </div>
-                )}
+              {/* Large, Clean Bottom Reference Image */}
+              <div className="w-full max-w-[350px] mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-2 shadow-xl flex items-center justify-center">
+                <div className="w-full aspect-square max-h-48 rounded-xl overflow-hidden border border-slate-800 shadow-inner">
+                  <img
+                    src={selectedImage}
+                    alt="Target Reference"
+                    className="w-full h-full object-cover"
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -742,7 +743,7 @@ export default function App() {
       )}
 
       <footer className="text-center py-2 text-[10px] text-slate-500 font-mono">
-        ENTERPRISE SESSION #{roomId || "---"}
+        CONNECTED TO SESSION #{roomId || "---"}
       </footer>
     </div>
   );
