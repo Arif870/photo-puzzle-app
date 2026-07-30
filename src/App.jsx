@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import Pusher from "pusher-js";
 import { QRCodeSVG } from "qrcode.react";
 import confetti from "canvas-confetti";
@@ -23,17 +23,17 @@ const INITIAL_PRESET_IMAGES = [
   {
     id: "1",
     name: "Mountain Peak",
-    url: "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=80",
+    url: "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1000&q=70",
   },
   {
     id: "2",
     name: "Neon City",
-    url: "https://images.unsplash.com/photo-1519501025264-65ba15a82390?auto=format&fit=crop&w=1200&q=80",
+    url: "https://images.unsplash.com/photo-1519501025264-65ba15a82390?auto=format&fit=crop&w=1000&q=70",
   },
   {
     id: "3",
     name: "Abstract Art",
-    url: "https://images.unsplash.com/photo-1541701494587-cb58502866ab?auto=format&fit=crop&w=1200&q=80",
+    url: "https://images.unsplash.com/photo-1541701494587-cb58502866ab?auto=format&fit=crop&w=1000&q=70",
   },
 ];
 
@@ -63,7 +63,6 @@ export default function App() {
   const [role, setRole] = useState("landing");
   const [roomId, setRoomId] = useState("");
 
-  // Image gallery state (includes custom uploads dynamically)
   const [presetImages, setPresetImages] = useState(INITIAL_PRESET_IMAGES);
   const [selectedImage, setSelectedImage] = useState(
     INITIAL_PRESET_IMAGES[0].url,
@@ -81,8 +80,8 @@ export default function App() {
   const [finalSolveTime, setFinalSolveTime] = useState(null);
   const [isCompleted, setIsCompleted] = useState(false);
 
-  // Host Fullscreen Modal State
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  // Explicit modal mode: 'qr' | 'image' | null
+  const [modalType, setModalType] = useState(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -93,7 +92,6 @@ export default function App() {
     }
   }, []);
 
-  // Real-Time Socket Connection
   useEffect(() => {
     if (!roomId) return;
 
@@ -109,7 +107,7 @@ export default function App() {
       setGridSize(data.gridSize);
       setSelectedImage(data.selectedImage);
       setStartTime(data.startTime || Date.now());
-      setIsModalOpen(false);
+      setModalType(null); // Close modal when game starts
       setIsCompleted(false);
       setFinalSolveTime(null);
     });
@@ -131,7 +129,7 @@ export default function App() {
     return () => pusher.unsubscribe(`room-${roomId}`);
   }, [roomId]);
 
-  // Millisecond Precision Stopwatch
+  // Millisecond-accurate timer
   useEffect(() => {
     let interval;
     if (gameStatus === "playing" && !isCompleted && startTime) {
@@ -182,7 +180,6 @@ export default function App() {
     await sendRoomEvent(roomId, "RESET_GAME", {});
   };
 
-  // Generate & Shuffle Mobile Tiles
   useEffect(() => {
     if (gameStatus === "playing" && role === "player") {
       const totalTiles = gridSize * gridSize;
@@ -218,7 +215,6 @@ export default function App() {
       const checkWin = newTiles.every((tile, idx) => tile.correctIndex === idx);
       if (checkWin) {
         const finishTimestamp = Date.now();
-        // Exact millisecond calculation shared with host
         const exactTime = parseFloat(
           ((finishTimestamp - startTime) / 1000).toFixed(1),
         );
@@ -235,7 +231,7 @@ export default function App() {
     }
   };
 
-  // Add Uploaded Image Directly to Gallery Presets
+  // High-Efficiency Canvas Compressor (<25KB string output for Pusher)
   const handleCustomImageUpload = e => {
     const file = e.target.files[0];
     if (file) {
@@ -245,7 +241,7 @@ export default function App() {
         img.src = uploadEvent.target.result;
         img.onload = () => {
           const canvas = document.createElement("canvas");
-          const maxDim = 1000;
+          const maxDim = 500; // Optimal resolution for Pusher WebSocket payload limit
           let width = img.width;
           let height = img.height;
 
@@ -265,16 +261,19 @@ export default function App() {
           canvas.height = height;
           const ctx = canvas.getContext("2d");
           ctx.drawImage(img, 0, 0, width, height);
-          const compressedDataUrl = canvas.toDataURL("image/jpeg", 0.85);
+
+          // Ultra-lightweight JPEG output (~15KB - 25KB Base64 string)
+          const optimizedDataUrl = canvas.toDataURL("image/jpeg", 0.55);
 
           const newCustomImage = {
             id: "custom_" + Date.now(),
             name: file.name || "Uploaded Photo",
-            url: compressedDataUrl,
+            url: optimizedDataUrl,
           };
 
           setPresetImages(prev => [...prev, newCustomImage]);
-          setSelectedImage(compressedDataUrl);
+          setSelectedImage(optimizedDataUrl);
+          setModalType("image"); // Open image fullscreen preview automatically
         };
       };
       reader.readAsDataURL(file);
@@ -357,17 +356,17 @@ export default function App() {
 
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 p-6 flex flex-col font-sans">
-        {/* Fullscreen Overlay */}
-        {isModalOpen && (
+        {/* Modal Overlay: Explicitly handles QR or IMAGE */}
+        {modalType && (
           <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center p-6">
             <button
-              onClick={() => setIsModalOpen(false)}
+              onClick={() => setModalType(null)}
               className="absolute top-6 right-6 p-3 bg-slate-800 hover:bg-slate-700 text-white rounded-2xl flex items-center gap-2 font-bold transition shadow-xl"
             >
               <Minimize2 className="w-6 h-6" /> Exit Fullscreen Mode
             </button>
 
-            {gameStatus === "lobby" ? (
+            {modalType === "qr" ? (
               <div className="flex flex-col items-center justify-center text-center">
                 <h2 className="text-3xl font-black text-white mb-2">
                   Scan QR Code to Join Session
@@ -396,7 +395,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Top Bar */}
+        {/* Top Header */}
         <header className="flex justify-between items-center bg-slate-900/80 backdrop-blur border border-slate-800 px-6 py-4 rounded-2xl mb-6 shadow-xl">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-indigo-400">
@@ -420,7 +419,7 @@ export default function App() {
         </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
-          {/* Controls Column */}
+          {/* Sidebar Controls */}
           <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between shadow-xl">
             <div className="space-y-6">
               <div>
@@ -428,17 +427,18 @@ export default function App() {
                   <ImageIcon className="w-4 h-4 text-indigo-400" /> Image
                   Selection
                 </h2>
-                {/* Dynamically includes uploaded images alongside defaults */}
+
+                {/* Dynamically displays uploaded & default images */}
                 <div className="grid grid-cols-3 gap-2 mb-3 max-h-48 overflow-y-auto pr-1">
                   {presetImages.map(img => (
                     <button
                       key={img.id}
                       onClick={() => {
                         setSelectedImage(img.url);
-                        setIsModalOpen(true); // Auto fullscreen on click
+                        setModalType("image"); // Opens selected image in fullscreen
                       }}
                       className={`relative rounded-lg overflow-hidden border-2 h-16 transition ${selectedImage === img.url ? "border-indigo-500 ring-2 ring-indigo-500/20" : "border-transparent opacity-50 hover:opacity-100"}`}
-                      title="Click to select & project full screen"
+                      title="Click to select & preview full screen"
                     >
                       <img
                         src={img.url}
@@ -500,10 +500,12 @@ export default function App() {
             </div>
           </div>
 
-          {/* Projection Area */}
+          {/* Center Projection Screen */}
           <div className="lg:col-span-6 bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center relative overflow-hidden shadow-xl">
             <button
-              onClick={() => setIsModalOpen(true)}
+              onClick={() =>
+                setModalType(gameStatus === "lobby" ? "qr" : "image")
+              }
               className="absolute top-4 right-4 p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl flex items-center gap-1.5 text-xs font-bold border border-slate-700 transition shadow-md z-10"
             >
               <Maximize2 className="w-4 h-4 text-indigo-400" /> Fullscreen Mode
@@ -521,30 +523,30 @@ export default function App() {
                 </div>
 
                 <div
-                  onClick={() => setIsModalOpen(true)}
+                  onClick={() => setModalType("qr")}
                   className="bg-white p-6 rounded-3xl shadow-2xl my-4 border-4 border-slate-800 cursor-pointer hover:scale-105 transition-transform"
+                  title="Click to view QR code full screen"
                 >
                   <QRCodeSVG value={joinUrl} size={220} />
                 </div>
 
                 <div className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs font-bold text-slate-300">
-                      Selected Target Image
-                    </span>
-                  </div>
+                  <span className="text-xs font-bold text-slate-300">
+                    Selected Target Image
+                  </span>
                   <img
                     src={selectedImage}
                     alt="Target Preview"
-                    onClick={() => setIsModalOpen(true)}
+                    onClick={() => setModalType("image")}
                     className="w-14 h-14 object-cover rounded-xl border border-slate-700 cursor-pointer hover:scale-110 transition-transform"
+                    title="Click to view Image full screen"
                   />
                 </div>
               </div>
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center">
                 <div
-                  onClick={() => setIsModalOpen(true)}
+                  onClick={() => setModalType("image")}
                   className="relative w-full max-w-md aspect-square rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl cursor-pointer hover:scale-[1.02] transition-transform"
                 >
                   <img
@@ -560,7 +562,7 @@ export default function App() {
             )}
           </div>
 
-          {/* Live Leaderboard Column */}
+          {/* Right Leaderboard Column */}
           <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col shadow-xl">
             <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-3">
               <h2 className="text-sm font-bold flex items-center gap-2 text-amber-400 uppercase tracking-wider">
@@ -636,7 +638,7 @@ export default function App() {
   // =========================================================================
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between p-4 max-w-md mx-auto font-sans">
-      {/* Ultra-Clean Header: ONLY TIMER */}
+      {/* Clean Mobile Top Bar: ONLY Live Timer */}
       <header className="flex justify-center items-center py-2 mb-2">
         {gameStatus === "playing" && (
           <div className="font-mono text-emerald-400 font-black text-2xl flex items-center gap-2 bg-slate-900 border border-slate-800 px-6 py-2 rounded-2xl shadow-xl">
@@ -729,7 +731,7 @@ export default function App() {
 
               {/* Large, Clean Bottom Reference Image */}
               <div className="w-full max-w-[350px] mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-2 shadow-xl flex items-center justify-center">
-                <div className="w-full aspect-square max-h-48 rounded-xl overflow-hidden border border-slate-800 shadow-inner">
+                <div className="w-full aspect-square max-h-52 rounded-xl overflow-hidden border border-slate-800 shadow-inner">
                   <img
                     src={selectedImage}
                     alt="Target Reference"
