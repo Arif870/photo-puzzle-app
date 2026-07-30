@@ -188,75 +188,10 @@ export default function App() {
     setGameStatus("playing");
     setStartTime(roundStart);
 
-    // Prepare an image URL that's safe to send to players.
-    // If sharedImage is a large data URL, upload a compressed preview first so the
-    // Pusher payload stays small and players can fetch an accessible URL.
-    let imageForPlayers = sharedImage;
-    try {
-      if (
-        sharedImage &&
-        sharedImage.startsWith &&
-        sharedImage.startsWith("data:")
-      ) {
-        const img = new Image();
-        img.src = sharedImage;
-        await new Promise((resolve, reject) => {
-          img.onload = resolve;
-          img.onerror = reject;
-        });
-
-        // Resize to a reasonable preview size for sharing
-        const maxDim = 800;
-        let width = img.width;
-        let height = img.height;
-        if (width > height) {
-          if (width > maxDim) {
-            height *= maxDim / width;
-            width = maxDim;
-          }
-        } else {
-          if (height > maxDim) {
-            width *= maxDim / height;
-            height = maxDim;
-          }
-        }
-
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, width, height);
-        const previewDataUrl = canvas.toDataURL("image/jpeg", 0.8);
-
-        try {
-          const resp = await fetch("/api/upload", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              dataUrl: previewDataUrl,
-              filename: "shared_preview.jpg",
-            }),
-          });
-          const json = await resp.json();
-          if (resp.ok && json && json.path) {
-            imageForPlayers = window.location.origin + json.path;
-          } else {
-            console.warn("Preview upload failed, sending data URL to players");
-            imageForPlayers = sharedImage;
-          }
-        } catch (err) {
-          console.warn("Upload preview failed:", err);
-          imageForPlayers = sharedImage;
-        }
-      }
-    } catch (err) {
-      console.error("Failed to prepare shared image for players:", err);
-      imageForPlayers = sharedImage;
-    }
-
+    // Send the pre-compressed ultra-light image to mobile clients instantly
     await sendRoomEvent(roomId, "GAME_START", {
       gridSize,
-      selectedImage: imageForPlayers,
+      selectedImage: sharedImage,
       startTime: roundStart,
     });
   };
@@ -318,17 +253,15 @@ export default function App() {
     }
   };
 
-  // Accept and use the full original image (no cropping/resizing)
+  // High-Efficiency Dual Compressor for zero latency uploads
   const handleCustomImageUpload = e => {
     const file = e.target.files[0];
     if (file) {
       const reader = new FileReader();
       reader.onload = uploadEvent => {
-        const originalDataUrl = uploadEvent.target.result;
         const img = new Image();
-        img.src = originalDataUrl;
-        img.onload = async () => {
-          // Create a smaller preview for fast mobile delivery
+        img.src = uploadEvent.target.result;
+        img.onload = () => {
           const resizeToDataUrl = (maxDim, quality) => {
             const canvas = document.createElement("canvas");
             let width = img.width;
@@ -353,66 +286,23 @@ export default function App() {
             return canvas.toDataURL("image/jpeg", quality);
           };
 
-          // Preview used for sharing to players (smaller)
-          const previewDataUrl = resizeToDataUrl(800, 0.8);
+          // High Resolution for Host display (1000px max)
+          const highResUrl = resizeToDataUrl(1000, 0.85);
 
-          try {
-            const resp = await fetch("/api/upload", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                dataUrl: previewDataUrl,
-                filename: file.name,
-              }),
-            });
-            const json = await resp.json();
-            if (resp.ok && json && json.path) {
-              const sharedUrl = window.location.origin + json.path;
+          // Ultra-Lightweight Resolution for Pusher transmission & Mobile display (350px max to exactly match mobile grid CSS)
+          const mobilePusherUrl = resizeToDataUrl(350, 0.5);
 
-              const newCustomImage = {
-                id: "custom_" + Date.now(),
-                name: file.name || "Uploaded Photo",
-                url: sharedUrl,
-              };
-
-              // Presenter keeps original data URL locally for highest fidelity preview
-              setPresetImages(prev => [...prev, newCustomImage]);
-              setSelectedImage(originalDataUrl);
-              setSharedImage(sharedUrl);
-            } else {
-              // fallback to using data URL if upload failed
-              const newCustomImage = {
-                id: "custom_" + Date.now(),
-                name: file.name || "Uploaded Photo",
-                url: originalDataUrl,
-              };
-              setPresetImages(prev => [...prev, newCustomImage]);
-              setSelectedImage(originalDataUrl);
-              setSharedImage(originalDataUrl);
-            }
-          } catch (err) {
-            console.error("Upload failed, falling back to data URL:", err);
-            const newCustomImage = {
-              id: "custom_" + Date.now(),
-              name: file.name || "Uploaded Photo",
-              url: originalDataUrl,
-            };
-            setPresetImages(prev => [...prev, newCustomImage]);
-            setSelectedImage(originalDataUrl);
-            setSharedImage(originalDataUrl);
-          }
-        };
-
-        img.onerror = () => {
-          // Fallback: just use the data URL
           const newCustomImage = {
             id: "custom_" + Date.now(),
             name: file.name || "Uploaded Photo",
-            url: originalDataUrl,
+            url: highResUrl,
+            sharedUrl: mobilePusherUrl, // Store this explicitly for Pusher transmission
           };
+
           setPresetImages(prev => [...prev, newCustomImage]);
-          setSelectedImage(originalDataUrl);
-          setSharedImage(originalDataUrl);
+          setSelectedImage(highResUrl);
+          setSharedImage(mobilePusherUrl); // Sets lightweight string for instant GAME_START delivery
+          setModalType("image"); // Auto preview on host screen
         };
       };
       reader.readAsDataURL(file);
@@ -574,7 +464,8 @@ export default function App() {
                       key={img.id}
                       onClick={() => {
                         setSelectedImage(img.url);
-                        setSharedImage(img.url);
+                        // Fallback to url if sharedUrl isn't provided (for presets)
+                        setSharedImage(img.sharedUrl || img.url);
                         setModalType("image"); // Opens selected image in fullscreen
                       }}
                       className={`relative rounded-lg overflow-hidden border-2 h-16 transition ${selectedImage === img.url ? "border-indigo-500 ring-2 ring-indigo-500/20" : "border-transparent opacity-50 hover:opacity-100"}`}
