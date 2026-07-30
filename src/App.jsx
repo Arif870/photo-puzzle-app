@@ -67,6 +67,9 @@ export default function App() {
   const [selectedImage, setSelectedImage] = useState(
     INITIAL_PRESET_IMAGES[0].url,
   );
+  const [sharedImage, setSharedImage] = useState(
+    INITIAL_PRESET_IMAGES[0].url,
+  );
   const [gridSize, setGridSize] = useState(2);
   const [gameStatus, setGameStatus] = useState("lobby");
   const [players, setPlayers] = useState([]);
@@ -105,7 +108,10 @@ export default function App() {
     channel.bind("GAME_START", data => {
       setGameStatus("playing");
       setGridSize(data.gridSize);
-      setSelectedImage(data.selectedImage);
+      setSharedImage(data.selectedImage);
+      if (role === "player") {
+        setSelectedImage(data.selectedImage);
+      }
       setStartTime(data.startTime || Date.now());
       setModalType(null); // Close modal when game starts
       setIsCompleted(false);
@@ -169,7 +175,7 @@ export default function App() {
     setStartTime(roundStart);
     await sendRoomEvent(roomId, "GAME_START", {
       gridSize,
-      selectedImage,
+      selectedImage: sharedImage,
       startTime: roundStart,
     });
   };
@@ -240,40 +246,42 @@ export default function App() {
         const img = new Image();
         img.src = uploadEvent.target.result;
         img.onload = () => {
-          const canvas = document.createElement("canvas");
-          const maxDim = 500; // Optimal resolution for Pusher WebSocket payload limit
-          let width = img.width;
-          let height = img.height;
+          const resizeToDataUrl = (maxDim, quality) => {
+            const canvas = document.createElement("canvas");
+            let width = img.width;
+            let height = img.height;
 
-          if (width > height) {
-            if (width > maxDim) {
-              height *= maxDim / width;
-              width = maxDim;
+            if (width > height) {
+              if (width > maxDim) {
+                height *= maxDim / width;
+                width = maxDim;
+              }
+            } else {
+              if (height > maxDim) {
+                width *= maxDim / height;
+                height = maxDim;
+              }
             }
-          } else {
-            if (height > maxDim) {
-              width *= maxDim / height;
-              height = maxDim;
-            }
-          }
 
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext("2d");
-          ctx.drawImage(img, 0, 0, width, height);
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, width, height);
+            return canvas.toDataURL("image/jpeg", quality);
+          };
 
-          // Ultra-lightweight JPEG output (~15KB - 25KB Base64 string)
-          const optimizedDataUrl = canvas.toDataURL("image/jpeg", 0.55);
+          const previewImage = resizeToDataUrl(1200, 0.85);
+          const mobileImage = resizeToDataUrl(500, 0.55);
 
           const newCustomImage = {
             id: "custom_" + Date.now(),
             name: file.name || "Uploaded Photo",
-            url: optimizedDataUrl,
+            url: previewImage,
           };
 
           setPresetImages(prev => [...prev, newCustomImage]);
-          setSelectedImage(optimizedDataUrl);
-          setModalType("image"); // Open image fullscreen preview automatically
+          setSelectedImage(previewImage);
+          setSharedImage(mobileImage);
         };
       };
       reader.readAsDataURL(file);
@@ -382,12 +390,12 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              <div className="flex flex-col items-center justify-center max-w-3xl w-full">
-                <div className="w-full aspect-square max-h-[80vh] rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl">
+              <div className="flex flex-col items-center justify-center max-w-5xl w-full">
+                <div className="w-full max-h-[80vh] min-h-[40vh] rounded-3xl overflow-hidden border-4 border-slate-800 shadow-2xl">
                   <img
                     src={selectedImage}
                     alt="Target Fullscreen"
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-contain bg-slate-950"
                   />
                 </div>
               </div>
@@ -435,6 +443,7 @@ export default function App() {
                       key={img.id}
                       onClick={() => {
                         setSelectedImage(img.url);
+                        setSharedImage(img.url);
                         setModalType("image"); // Opens selected image in fullscreen
                       }}
                       className={`relative rounded-lg overflow-hidden border-2 h-16 transition ${selectedImage === img.url ? "border-indigo-500 ring-2 ring-indigo-500/20" : "border-transparent opacity-50 hover:opacity-100"}`}
